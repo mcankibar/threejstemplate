@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { packageVariant, inspectRelease } from "./patch.js";
-import { EXPORT_NETWORK_NAMES } from "./networks.js";
+import { EXPORT_NETWORK_NAMES, NETWORK_PROFILE_VERSION } from "./networks.js";
 import { detectMime } from "../kit/assets.js";
 
 function parseArgs(argv) {
@@ -101,6 +101,17 @@ const slug = (s) =>
   String(s)
     .replace(/^@[^/]+\//, "")
     .replace(/[^a-zA-Z0-9._-]+/g, "-");
+function writeAtomic(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, data, { flag: "wx" });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
+}
+
 const mb = (bytes) => (bytes / 1024 / 1024).toFixed(2) + " MB";
 
 function main() {
@@ -131,19 +142,16 @@ function main() {
             ? path.join(args.out, base, packed.entryName)
             : path.join(args.out, `${base}.${packed.extension}`);
         if (outputs.has(outFile)) throw new Error(`Duplicate output: ${outFile}`);
-        outputs.set(outFile, packed);
+        outputs.set(outFile, { ...packed, variant: variant.name });
       }
     }
   }
-  for (const [outFile, { data, report }] of outputs) {
-    fs.mkdirSync(path.dirname(outFile), { recursive: true });
-    const temp = `${outFile}.${crypto.randomUUID()}.tmp`;
-    try {
-      fs.writeFileSync(temp, data, { flag: "wx" });
-      fs.renameSync(temp, outFile);
-    } finally {
-      if (fs.existsSync(temp)) fs.unlinkSync(temp);
-    }
+  // report.json is written last and removed first: a folder without it is an interrupted batch.
+  const reportFile = path.join(args.out, "report.json");
+  fs.rmSync(reportFile, { force: true });
+  const entries = [];
+  for (const [outFile, { data, report, variant }] of outputs) {
+    writeAtomic(outFile, data);
     console.log(
       `✓ ${outFile}  ${mb(data.length)}  ${report.applied} override(s), ${
         report.pruned.length
@@ -151,7 +159,29 @@ function main() {
     );
     if (report.orphans.length)
       console.warn(`  ! ignored unknown paths (removed/renamed fields?): ${report.orphans.join(", ")}`);
+    report.warnings.forEach((w) => console.warn(`  ! ${w}`));
+    entries.push({
+      variant,
+      network: report.network,
+      language: report.language,
+      path: path.relative(args.out, outFile).split(path.sep).join("/"),
+      packageBytes: report.packageBytes,
+      sizeBytes: report.sizeBytes,
+      storeUrl: report.storeUrl,
+      warnings: report.warnings,
+      orphans: report.orphans,
+      pruned: report.pruned
+    });
   }
+  const summary = {
+    releaseId: manifest.releaseId ?? null,
+    game: manifest.game.id,
+    profileVersion: NETWORK_PROFILE_VERSION,
+    createdAt: new Date().toISOString(),
+    exports: entries
+  };
+  writeAtomic(reportFile, JSON.stringify(summary, null, 2) + "\n");
+  console.log(`✓ ${reportFile}`);
 }
 
 try {
