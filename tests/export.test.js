@@ -21,6 +21,7 @@ import {
 } from "../playable/build/blocks.js";
 import { exportVariant, inspectRelease, packageVariant } from "../playable/export/patch.js";
 import { EXPORT_NETWORKS } from "../playable/export/networks.js";
+import { NETWORKS } from "../playable/kit/networks.js";
 import { validateAsset, inspectGlb } from "../playable/kit/assets.js";
 
 const { manifest, assets } = buildManifest({
@@ -45,6 +46,24 @@ test("every profile packages valid JS without modifying game code", () => {
     assert.equal(packed.report.packageBytes, packed.data.length);
     if (packed.extension === "zip") assert.ok(unzipSync(packed.data)["index.html"]);
   }
+});
+
+test("runtime and packaging network catalogs stay in sync", () => {
+  assert.deepEqual(Object.keys(EXPORT_NETWORKS).sort(), [...NETWORKS].sort());
+  for (const [name, net] of Object.entries(EXPORT_NETWORKS)) {
+    assert.ok(net.label, name);
+    assert.ok(["html", "zip"].includes(net.container), name);
+    assert.ok(["always", "maybe", "never"].includes(net.storeUrl), name);
+  }
+});
+
+test("store link overrides warn only where the network ignores the URL", () => {
+  const overrides = { "options.link.ios": "https://apps.apple.com/app/id1" };
+  assert.deepEqual(exportVariant(html, { network: "unity", overrides }).report.warnings, []);
+  assert.deepEqual(exportVariant(html, { network: "tiktok" }).report.warnings, []);
+  const [warning] = exportVariant(html, { network: "tiktok", overrides }).report.warnings;
+  assert.match(warning, /options\.link\.ios has no effect/);
+  assert.match(exportVariant(html, { network: "facebook", overrides }).report.warnings[0], /may open/);
 });
 
 test("Google and TikTok use their documented SDK entry points", () => {
@@ -168,6 +187,13 @@ test("CLI validates complete batches before writing and preserves Mintegral entr
     );
     assert.equal(valid.status, 0, valid.stderr);
     assert.ok(fs.existsSync(path.join(out, "test_default_mintegral_auto/mintegral.html")));
+    const report = JSON.parse(fs.readFileSync(path.join(out, "report.json"), "utf8"));
+    assert.equal(report.exports.length, 1);
+    assert.equal(report.exports[0].path, "test_default_mintegral_auto/mintegral.html");
+    assert.equal(report.exports[0].storeUrl, "never");
+    // Validation errors leave earlier outputs and their report untouched.
+    spawnSync(process.execPath, ["playable/export/cli.js", `--release=${release}`, `--out=${out}`, "--langs=zz"]);
+    assert.ok(fs.existsSync(path.join(out, "report.json")));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
