@@ -10,7 +10,7 @@
 //   <!--pl:assets--> <script type="text/plain" data-pl-asset="id" data-mime="...">BASE64</script> ... <!--/pl:assets-->
 //   <!--pl:game--><script id="pl-game">...game bundle...</script><!--/pl:game-->
 
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 export const BLOCKS = ["network", "manifest", "config", "assets", "game"];
 
 const MIME = {
@@ -20,6 +20,7 @@ const MIME = {
   webp: "image/webp",
   gif: "image/gif",
   mp3: "audio/mpeg",
+  aac: "audio/aac",
   ogg: "audio/ogg",
   wav: "audio/wav",
   m4a: "audio/mp4",
@@ -38,7 +39,10 @@ export function mimeOf(fileName) {
 
 /** JSON that is safe inside a <script> element. */
 export function scriptJson(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 /** JS that is safe inside a <script> element. */
@@ -51,17 +55,27 @@ export function wrap(name, inner) {
   return `<!--pl:${name}-->${inner}<!--/pl:${name}-->`;
 }
 
-export const networkBlock = (network) => wrap("network", `<script id="pl-network">window.__PL_NETWORK__=${scriptJson(network)};</script>`);
-export const manifestBlock = (manifest) => wrap("manifest", `<script type="application/json" id="pl-manifest">${scriptJson(manifest)}</script>`);
-export const configBlock = (overrides) => wrap("config", `<script type="application/json" id="pl-config">${scriptJson(overrides)}</script>`);
+export const networkBlock = (network, mode = "preview") =>
+  wrap(
+    "network",
+    `<script id="pl-network">window.__PL_NETWORK__=${scriptJson(network)};window.__PL_MODE__=${scriptJson(
+      mode
+    )};</script>`
+  );
+export const manifestBlock = (manifest) =>
+  wrap("manifest", `<script type="application/json" id="pl-manifest">${scriptJson(manifest)}</script>`);
+export const configBlock = (overrides) =>
+  wrap("config", `<script type="application/json" id="pl-config">${scriptJson(overrides)}</script>`);
 export const gameBlock = (code) => wrap("game", `<script id="pl-game">${scriptJs(code)}</script>`);
 
 /** assets: Array<{ id, mime, base64 } | { id, mime, src }> */
 export function assetsBlock(assets) {
   const tags = assets.map(({ id, mime, base64, src }) =>
     src
-      ? `<script type="text/plain" data-pl-asset="${escapeAttr(id)}" data-mime="${mime}" data-src="${escapeAttr(src)}"></script>`
-      : `<script type="text/plain" data-pl-asset="${escapeAttr(id)}" data-mime="${mime}">${base64}</script>`
+      ? `<script type="text/plain" data-pl-asset="${escapeAttr(id)}" data-mime="${escapeAttr(
+          mime
+        )}" data-src="${escapeAttr(src)}"></script>`
+      : `<script type="text/plain" data-pl-asset="${escapeAttr(id)}" data-mime="${escapeAttr(mime)}">${base64}</script>`
   );
   return wrap("assets", "\n" + tags.join("\n") + "\n");
 }
@@ -70,7 +84,10 @@ function escapeAttr(s) {
   return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 function unescapeAttr(s) {
-  return String(s).replace(/&lt;/g, "<").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  return String(s)
+    .replace(/&lt;/g, "<")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
 }
 
 function markerRange(html, name) {
@@ -79,7 +96,14 @@ function markerRange(html, name) {
   const start = html.indexOf(open);
   const end = html.indexOf(close);
   if (start === -1 || end === -1 || end < start) return null;
-  return { start, end: end + close.length, innerStart: start + open.length, innerEnd: end };
+  if (html.indexOf(open, start + open.length) !== -1 || html.indexOf(close, end + close.length) !== -1)
+    throw new Error(`Duplicate pl:${name} block`);
+  return {
+    start,
+    end: end + close.length,
+    innerStart: start + open.length,
+    innerEnd: end
+  };
 }
 
 export function hasBlock(html, name) {
@@ -115,11 +139,13 @@ export function readGameCode(html) {
 /** @returns Map<id, { id, mime, base64?, src? }> */
 export function readAssets(html) {
   const inner = readBlock(html, "assets");
-  const re = /<script type="text\/plain" data-pl-asset="([^"]*)" data-mime="([^"]*)"(?: data-src="([^"]*)")?>([\s\S]*?)<\/script>/g;
+  const re =
+    /<script type="text\/plain" data-pl-asset="([^"]*)" data-mime="([^"]*)"(?: data-src="([^"]*)")?>([\s\S]*?)<\/script>/g;
   const out = new Map();
   let m;
   while ((m = re.exec(inner))) {
     const id = unescapeAttr(m[1]);
+    if (out.has(id)) throw new Error(`Duplicate asset id: ${id}`);
     out.set(id, m[3] ? { id, mime: m[2], src: unescapeAttr(m[3]) } : { id, mime: m[2], base64: m[4] });
   }
   return out;

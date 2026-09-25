@@ -8,13 +8,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import {
-  assetsBlock,
-  configBlock,
-  gameBlock,
-  manifestBlock,
-  networkBlock
-} from "./blocks.js";
+import crypto from "node:crypto";
+import { assetsBlock, configBlock, gameBlock, manifestBlock, networkBlock } from "./blocks.js";
 import { buildManifest, loadDefinition } from "./manifest.js";
 
 const HEAD_MARKER = "<!--pl:head-->";
@@ -47,7 +42,11 @@ export default function playable(options = {}) {
 
   async function blocks() {
     const definition = await loadDefinition(abs(params));
-    const { manifest, assets } = buildManifest({ definition, assetsDir: abs(assetsDir), game: gameInfo() });
+    const { manifest, assets } = buildManifest({
+      definition,
+      assetsDir: abs(assetsDir),
+      game: gameInfo()
+    });
     return { manifest, assets };
   }
 
@@ -65,27 +64,33 @@ export default function playable(options = {}) {
 
   return {
     name: "playable",
+    enforce: "post",
 
     config(userConfig, { command }) {
       isBuild = command === "build";
       if (!isBuild) return {};
       return {
         build: {
-          target: "es2018",
-          outDir: "dist",
-          emptyOutDir: true,
+          target: userConfig.build?.target ?? "es2018",
+          outDir: userConfig.build?.outDir ?? "dist",
+          emptyOutDir: userConfig.build?.emptyOutDir ?? true,
+          copyPublicDir: false,
           modulePreload: false,
           cssCodeSplit: false,
           assetsInlineLimit: Number.MAX_SAFE_INTEGER,
           reportCompressedSize: false,
           rollupOptions: {
             input: entry,
-            output: { format: "iife", inlineDynamicImports: true, entryFileNames: "game.js" }
+            output: {
+              format: "iife",
+              inlineDynamicImports: true,
+              entryFileNames: "game.js"
+            }
           }
         },
         esbuild: {
           legalComments: "none",
-          pure: ["console.log", "console.debug", "console.info", "console.warn"]
+          pure: ["console.log", "console.debug", "console.info"]
         }
       };
     },
@@ -102,6 +107,7 @@ export default function playable(options = {}) {
       };
       server.watcher.on("change", reload);
       server.watcher.on("add", reload);
+      server.watcher.on("unlink", reload);
     },
 
     transformIndexHtml: {
@@ -127,23 +133,51 @@ export default function playable(options = {}) {
     async generateBundle(_, bundle) {
       const chunk = Object.values(bundle).find((f) => f.type === "chunk" && f.isEntry);
       if (!chunk) this.error("no entry chunk produced");
+      const styles = [];
+      for (const [name, item] of Object.entries(bundle)) {
+        if (item === chunk) continue;
+        if (item.type === "asset" && name.endsWith(".css")) {
+          const css = String(item.source);
+          if (/<\/style/i.test(css)) this.error("CSS contains an unsafe closing style tag");
+          styles.push(`<style>${css}</style>`);
+        } else this.error(`Unsupported single-file output: ${name}. Inline it or declare it in params.js.`);
+      }
       Object.keys(bundle).forEach((name) => delete bundle[name]);
 
       const { manifest, assets } = await blocks();
+      manifest.releaseId = crypto
+        .createHash("sha256")
+        .update(
+          JSON.stringify({
+            code: chunk.code,
+            styles,
+            template: fs.readFileSync(abs(template), "utf8"),
+            fields: manifest.fields,
+            assets,
+            game: { ...manifest.game, builtAt: undefined }
+          })
+        )
+        .digest("hex");
       const html = fillTemplate(
         fs.readFileSync(abs(template), "utf8"),
         manifest.game.title,
-        networkBlock("default"),
+        [networkBlock("default"), ...styles].join("\n"),
         [manifestBlock(manifest), configBlock({}), assetsBlock(assets), gameBlock(chunk.code)].join("\n")
       );
 
       this.emitFile({ type: "asset", fileName: "index.html", source: html });
-      this.emitFile({ type: "asset", fileName: "manifest.json", source: JSON.stringify(manifest, null, 2) });
+      this.emitFile({
+        type: "asset",
+        fileName: "manifest.json",
+        source: JSON.stringify(manifest, null, 2)
+      });
 
       const mb = Buffer.byteLength(html) / 1024 / 1024;
       const assetMb = assets.reduce((n, a) => n + a.base64.length, 0) / 1024 / 1024;
       const msg = `playable: index.html ${mb.toFixed(2)} MB (assets ${assetMb.toFixed(2)} MB, code ${(
-        chunk.code.length / 1024 / 1024
+        chunk.code.length /
+        1024 /
+        1024
       ).toFixed(2)} MB), ${manifest.fields.length} editable fields`;
       if (mb > sizeWarningMb) this.warn(`${msg} — over ${sizeWarningMb} MB`);
       else console.log("\n" + msg);

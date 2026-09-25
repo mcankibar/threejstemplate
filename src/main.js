@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import _ from "lodash-es";
+import gsap from "gsap";
 
 import definition from "./params";
 import { createRuntime } from "../playable/kit/runtime.js";
@@ -305,6 +306,10 @@ class Game {
       currentGameConfig: this.currentGameConfig,
       WEBGLRenderer: this.renderer,
       onWindowResize: this.onWindowResize.bind(this),
+      onPauseChange: (paused) => {
+        this.isPaused = paused;
+        gsap.globalTimeline.paused(paused);
+      },
       eventBus: this.eventBus
     });
     this.playable.eventBus.on(
@@ -323,13 +328,14 @@ class Game {
 
     // MOVE_EVENT — tutorial hand scheduling
     this.eventBus.on(MOVE_EVENT, () => {
+      if (this.isPaused) return;
       this.currentMoveCount++;
       if (!this.currentGameConfig.options.isTutorialEnabled) return;
 
       const reschedule = () => {
-        clearTimeout(this.tutorialTimeout);
+        this.playable.cancel(this.tutorialTimeout);
         if (this.currentMoveCount <= tutorialHand.showingMoveCount) {
-          this.tutorialTimeout = setTimeout(() => {
+          this.tutorialTimeout = this.playable.schedule(() => {
             if (this.playable.helper.getIsEndCardShown()) return;
             if (this.isTouching) {
               reschedule();
@@ -365,7 +371,7 @@ class Game {
         this.syncBackgroundPlane();
 
         document.body.addEventListener("pointerdown", () => {
-          this.eventBus.emit(MOVE_EVENT);
+          if (!this.isPaused) this.eventBus.emit(MOVE_EVENT);
         });
         document.body.addEventListener("pointerup", () => {
           this.resumeAudioContext();
@@ -386,9 +392,6 @@ class Game {
     this.eventBus.on(INPUT_STATUS_EVENT, (status) => {
       this.isInputEnabled = status;
     });
-
-    this.playable.startPlayable();
-    this.isGameStarted = true;
 
     // onComponentsReady is set here so it can close over tutorialHand
     this.onComponentsReady = () => {
@@ -411,12 +414,15 @@ class Game {
         tutorialHand.render();
       }
     };
+    this.playable.startPlayable();
+    this.isGameStarted = true;
   }
 
   // ─── Audio Context ─────────────────────────────────────────────────
 
   /** Resumes the AudioContext on first user interaction and registers lifecycle listeners. */
   resumeAudioContext() {
+    if (this.isPaused) return;
     const ctx = THREE.AudioContext.getContext();
     if (ctx.state === "suspended" || ctx.state === "interrupted") {
       ctx.resume();
@@ -431,6 +437,7 @@ class Game {
   setupAudioContextListeners() {
     window.addEventListener("focus", () => {
       this.isAudioContextSetByBlur = false;
+      if (this.isPaused) return;
       const ctx = THREE.AudioContext.getContext();
       if (ctx.state === "suspended") ctx.resume();
     });
@@ -439,8 +446,8 @@ class Game {
       const ctx = THREE.AudioContext.getContext();
       if (ctx.state === "running") ctx.suspend();
     });
-    window.addEventListener("visibilitychange", () => {
-      if (!document.hidden && !this.isAudioContextSetByBlur) {
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && !this.isAudioContextSetByBlur && !this.isPaused) {
         const ctx = THREE.AudioContext.getContext();
         if (ctx.state === "suspended") ctx.resume();
       }
@@ -463,7 +470,6 @@ class Game {
     this.deltaTime = clock.getDelta();
 
     if (this.isPaused) {
-      this.render();
       window.requestAnimFrame(this.update.bind(this));
       return;
     }
@@ -505,7 +511,9 @@ class Game {
       if (this.deviceType !== "desktop" && this.previousDeviceType === "desktop") {
         this.previousDeviceType = this.deviceType;
         window.removeEventListener("pointerdown", this.pointerDownListener);
-        window.addEventListener("touchstart", this.pointerDownListener, { passive: false });
+        window.addEventListener("touchstart", this.pointerDownListener, {
+          passive: false
+        });
         window.removeEventListener("pointermove", this.pointerMoveListener);
         window.addEventListener("touchmove", this.pointerMoveListener);
         window.removeEventListener("pointerup", this.pointerUpListener);
@@ -594,8 +602,8 @@ class Game {
 // Editing happens outside the game: the Studio / dev panel sends new overrides with a
 // "pl:preview" message and the page restarts with them (playable/kit/runtime.js).
 
-window.setIsPaused = () => {
-  /* Not Implemented */
+window.setIsPaused = (paused) => {
+  if (game) game.playable.clock.setPaused("manual", !!paused);
 };
 
 let game;

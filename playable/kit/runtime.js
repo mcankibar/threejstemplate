@@ -13,6 +13,8 @@
 import { collectFields, resolveConfig, sanitizeOverrides } from "./resolve.js";
 import { getNetworkSettings } from "./networks.js";
 
+const previewEnabled = () => window.__PL_MODE__ === "preview";
+
 const PREVIEW_PREFIX = "pl-preview:";
 const TRANSPARENT_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -29,6 +31,7 @@ function readJsonBlock(id) {
 }
 
 export function readPreviewState() {
+  if (!previewEnabled()) return null;
   if (typeof window.name !== "string" || !window.name.startsWith(PREVIEW_PREFIX)) return null;
   try {
     return JSON.parse(window.name.slice(PREVIEW_PREFIX.length));
@@ -39,11 +42,13 @@ export function readPreviewState() {
 
 /** Reloads the page with the given overrides/assets (assets: { id: dataUri }). */
 export function applyPreview(overrides = {}, assets = {}) {
+  if (!previewEnabled()) return;
   window.name = PREVIEW_PREFIX + JSON.stringify({ overrides, assets });
   window.location.reload();
 }
 
 export function clearPreview() {
+  if (!previewEnabled()) return;
   window.name = "";
   window.location.reload();
 }
@@ -101,20 +106,32 @@ export function createRuntime(definition) {
   const { config, languages } = resolveConfig(definition, values, entry);
 
   listenForPreviewMessages();
-  if (window.parent && window.parent !== window) {
-    window.parent.postMessage({ type: "pl:ready", overrides: values, languages }, "*");
+  if (previewEnabled() && window.parent && window.parent !== window && window.location.origin !== "null") {
+    window.parent.postMessage({ type: "pl:ready", overrides: values, languages }, window.location.origin);
   }
 
-  return { config, fields, languages, overrides: values, network: getNetworkSettings(), isPreview: !!preview };
+  return {
+    config,
+    fields,
+    languages,
+    overrides: values,
+    network: getNetworkSettings(),
+    isPreview: !!preview
+  };
 }
 
 let listening = false;
 function listenForPreviewMessages() {
-  if (listening) return;
+  if (listening || !previewEnabled()) return;
   listening = true;
   window.addEventListener("message", (event) => {
+    if (!previewEnabled() || event.source !== window.parent || event.source === window) return;
     const msg = event.data;
     if (!msg || typeof msg !== "object") return;
+    const token = window.__PL_PREVIEW_TOKEN__;
+    const sameOrigin = event.origin !== "null" && event.origin === window.location.origin;
+    const authenticated = typeof token === "string" && token.length >= 16 && msg.token === token;
+    if (token ? !authenticated : !sameOrigin) return;
     if (msg.type === "pl:preview") applyPreview(msg.overrides || {}, msg.assets || {});
     else if (msg.type === "pl:reset") clearPreview();
   });

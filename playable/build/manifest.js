@@ -6,7 +6,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ASSET_TYPES } from "../kit/fields.js";
 import { assetUsage, collectFields, collectLanguages } from "../kit/resolve.js";
-import { FORMAT_VERSION, PLACEHOLDERS, mimeOf } from "./blocks.js";
+import { validateAssetId, validateAsset, detectMime, MODEL_CAPABILITIES } from "../kit/assets.js";
+import { FORMAT_VERSION, PLACEHOLDERS } from "./blocks.js";
 
 export async function loadDefinition(paramsFile) {
   // Cache-bust so the dev server picks up edits without a restart.
@@ -42,7 +43,10 @@ export function buildManifest({ definition, assetsDir, game }) {
   const assetInfo = {};
   for (const id of used) {
     const type = assetTypes.get(id);
+    validateAssetId(id);
     const file = path.join(assetsDir, id);
+    if (fs.existsSync(file) && !fs.realpathSync(file).startsWith(fs.realpathSync(assetsDir) + path.sep))
+      throw new Error(`Asset escapes assets directory: ${id}`);
     if (!fs.existsSync(file)) {
       missing.push(id);
       continue;
@@ -51,10 +55,17 @@ export function buildManifest({ definition, assetsDir, game }) {
     // placeholder instead of the real image.
     const pruned = !needed.has(id) && PLACEHOLDERS[type];
     const bytes = pruned ? null : fs.readFileSync(file);
-    const mime = pruned ? PLACEHOLDERS[type].mime : mimeOf(id);
+    const mime = pruned ? PLACEHOLDERS[type].mime : detectMime(bytes);
     const base64 = pruned ? PLACEHOLDERS[type].base64 : bytes.toString("base64");
+    for (const field of fields.filter((f) => ASSET_TYPES.includes(f.type) && f.default === id))
+      validateAsset(id, { mime, base64 }, field);
     assets.push({ id, type, mime, base64 });
-    assetInfo[id] = { type, mime, bytes: pruned ? 0 : bytes.length, ...(pruned ? { pruned: true } : {}) };
+    assetInfo[id] = {
+      type,
+      mime,
+      bytes: pruned ? 0 : bytes.length,
+      ...(pruned ? { pruned: true } : {})
+    };
   }
   if (missing.length) {
     throw new Error(`src/params.js references files that are not in ${assetsDir}:\n  ${missing.join("\n  ")}`);
@@ -62,6 +73,8 @@ export function buildManifest({ definition, assetsDir, game }) {
 
   const manifest = {
     format: FORMAT_VERSION,
+    schemaVersion: 1,
+    capabilities: { models: MODEL_CAPABILITIES },
     game,
     languages: collectLanguages(fields),
     fields: fields.map(publicField),

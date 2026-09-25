@@ -2,7 +2,7 @@
 // Ported from @common-packages/ad-network-settings so the template no longer needs the private
 // registry. Every network lives in the same bundle; the network is picked at runtime from
 // window.__PL_NETWORK__, which the exporter writes into the HTML. Build-time differences (head tags,
-// file splitting, text replacements) live in playable/export/networks.js.
+// file splitting, SDK tags) live in playable/export/networks.js.
 
 const isFn = (f) => typeof f === "function";
 
@@ -36,10 +36,9 @@ const settings = {
   appgrowth: { handleOpenStore: viaMraidDapiOr(windowOpen) },
   mintegral: {
     handleOpenStore: () => {
-      if (isFn(window.gameEnd)) window.gameEnd();
       if (isFn(window.install)) window.install();
     },
-    onPlayableStarted: () => {
+    onPlayableReady: () => {
       if (isFn(window.gameReady)) window.gameReady();
       else console.error("Mintegral: window.gameReady() cannot be found.");
     },
@@ -93,13 +92,12 @@ const settings = {
     onPlayableEnd: () => parent.postMessage("complete", "*")
   },
   tiktok: {
-    handleOpenStore: (url) => {
-      if (mraidOpen(url) || dapiOpen(url)) return;
-      if (!window.playableSDK || !isFn(window.playableSDK.openAppStore)) {
-        console.error("Tiktok: window.playableSDK.openAppStore is not available");
+    handleOpenStore: () => {
+      if (!isFn(window.openAppStore)) {
+        console.error("Tiktok: window.openAppStore is not available");
         return;
       }
-      window.playableSDK.openAppStore(url);
+      window.openAppStore();
     }
   },
   smadex: {
@@ -117,7 +115,7 @@ export const NETWORKS = Object.keys(settings);
 
 export function currentNetwork() {
   const n = typeof window !== "undefined" && window.__PL_NETWORK__;
-  return n && settings[n] ? n : "default";
+  return n && Object.prototype.hasOwnProperty.call(settings, n) ? n : "default";
 }
 
 export function getNetworkSettings(network = currentNetwork()) {
@@ -171,19 +169,16 @@ export class DapiHandler {
     dapi.addEventListener("audioVolumeChange", (volume) =>
       volume ? this.playable.unmuteGame() : this.playable.muteGame()
     );
-    if (dapi.isViewable()) {
-      this.isDapiViewable = true;
-      this.playable.loadGame();
-    }
+    this.handleViewableChange({ isViewable: dapi.isViewable() });
   }
   handleViewableChange(event) {
     this.isDapiViewable = event.isViewable;
+    if (event.isViewable) this.playable.resumeGame("sdk");
+    else this.playable.pauseGame("sdk");
     if (this.playable.isGamePlayable) {
       if (event.isViewable) {
-        this.playable.resumeGame();
         this.playable.unmuteGame();
       } else {
-        this.playable.pauseGame();
         this.playable.muteGame();
       }
     } else if (event.isViewable) {
@@ -235,6 +230,7 @@ export class MraidHandler {
     return true;
   }
   onMraidReady() {
+    if (this.isMraidReady) return;
     this.isMraidReady = true;
     this._screenSize = this.resolveScreenSize();
     mraid.addEventListener("sizeChange", () => {
@@ -250,13 +246,13 @@ export class MraidHandler {
       this.exposurePercentage = e;
       this.updateGameVolume();
     });
-    if (mraid.isViewable()) this.playable.loadGame();
+    this.handleViewableChange(mraid.isViewable());
   }
   handleViewableChange(viewable) {
     this.viewableState = viewable;
+    if (viewable) this.playable.resumeGame("sdk");
+    else this.playable.pauseGame("sdk");
     if (this.playable.isGamePlayable) {
-      if (viewable) this.playable.resumeGame();
-      else this.playable.pauseGame();
       this.updateGameVolume();
     } else if (viewable) {
       this.playable.loadGame();

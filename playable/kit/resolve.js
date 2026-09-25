@@ -61,14 +61,25 @@ export function collectFields(definition) {
     // The nearest isEnabled switch decides whether the assets below it are needed at all.
     if ("isEnabled" in node) {
       const flag = node.isEnabled;
-      if (isField(flag)) next = { ...next, enabledBy: [...path, "isEnabled"].join("."), constantDisabled: false };
+      if (isField(flag))
+        next = {
+          ...next,
+          enabledBy: [...path, "isEnabled"].join("."),
+          constantDisabled: false
+        };
       else next = { ...next, enabledBy: null, constantDisabled: flag === false };
     }
 
     Object.keys(node).forEach((key) => visit(node[key], [...path, key], next));
   }
 
-  visit(definition, [], { group: "General", groupDepth: 0, inLoc: false, enabledBy: null, constantDisabled: false });
+  visit(definition, [], {
+    group: "General",
+    groupDepth: 0,
+    inLoc: false,
+    enabledBy: null,
+    constantDisabled: false
+  });
   return out;
 }
 
@@ -101,14 +112,16 @@ function toHex(value) {
 export function normalizeValue(field, value) {
   switch (field.type) {
     case "number": {
-      let n = Number(value);
+      if (typeof value !== "number") return { error: "expected a number" };
+      let n = value;
+      if ((field.integer || field.step === 1) && !Number.isInteger(n)) return { error: "expected an integer" };
       if (!Number.isFinite(n)) return { error: "not a number" };
       if (typeof field.min === "number") n = Math.max(field.min, n);
       if (typeof field.max === "number") n = Math.min(field.max, n);
       return { value: n };
     }
     case "boolean":
-      return { value: value === true || value === "true" };
+      return typeof value === "boolean" ? { value } : { error: "expected a boolean" };
     case "color": {
       const hex = toHex(value);
       if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return { error: "expected #rrggbb" };
@@ -118,15 +131,19 @@ export function normalizeValue(field, value) {
       if (field.localized) {
         const map = toLocalized(value);
         const clean = {};
-        Object.entries(map).forEach(([lang, s]) => (clean[lang] = String(s)));
+        for (const [lang, s] of Object.entries(map)) {
+          if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(lang) || typeof s !== "string")
+            return { error: "expected language-to-text map" };
+          clean[lang] = s;
+        }
         return { value: clean };
       }
-      return { value: String(value) };
+      return typeof value === "string" ? { value } : { error: "expected text" };
     case "select":
       if (!field.options.includes(value)) return { error: `must be one of ${field.options.join(", ")}` };
       return { value };
     case "language":
-      return { value: String(value) };
+      return typeof value === "string" ? { value } : { error: "expected text" };
     default:
       // asset fields: an asset id (path under assets/ or an uploaded id)
       if (typeof value !== "string" || !value) return { error: "expected an asset id" };
@@ -141,7 +158,7 @@ export function normalizeValue(field, value) {
 export function sanitizeOverrides(fields, overrides = {}) {
   const byPath = new Map(fields.map((f) => [f.path, f]));
   const aliasOf = new Map();
-  fields.forEach((f) => f.aliases.forEach((a) => aliasOf.set(a, f.path)));
+  fields.forEach((f) => (f.aliases || []).forEach((a) => aliasOf.set(a, f.path)));
 
   const values = {};
   const orphans = [];
@@ -157,6 +174,14 @@ export function sanitizeOverrides(fields, overrides = {}) {
     if (res.error) errors.push(`${path}: ${res.error}`);
     else values[path] = res.value;
   });
+  const languages = collectLanguages(fields, values);
+  for (const field of fields.filter((f) => f.type === "language")) {
+    const lang = values[field.path] ?? field.default;
+    if (lang !== "auto" && !languages.includes(lang)) {
+      errors.push(`${field.path}: unsupported language "${lang}"`);
+      delete values[field.path];
+    }
+  }
   return { values, orphans, errors };
 }
 

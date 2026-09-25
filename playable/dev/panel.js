@@ -3,6 +3,7 @@
 // Studio will use (reload with overrides), and downloads the result as a variant file that
 // `npm run export -- --variant=...` understands.
 
+import { detectMime, validateAsset } from "../kit/assets.js";
 import definition from "../../src/params.js";
 import { ASSET_TYPES } from "../kit/fields.js";
 import { collectFields, collectLanguages, normalizeValue, toLocalized } from "../kit/resolve.js";
@@ -45,7 +46,10 @@ const toHex = (v) => (typeof v === "number" ? "#" + v.toString(16).padStart(6, "
 
 async function sha(bytes) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+  return [...new Uint8Array(hash)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 12);
 }
 
 function assetPreviewSrc(id, uploads) {
@@ -66,8 +70,12 @@ export function mountDevPanel() {
 
   document.head.append(el("style", {}, STYLES));
   const panel = el("div", { id: "pl-dev" });
-  const toggle = el("button", { id: "pl-dev-toggle", onclick: () => panel.classList.toggle("open") });
+  const toggle = el("button", {
+    id: "pl-dev-toggle",
+    onclick: () => panel.classList.toggle("open")
+  });
   const body = el("div", { class: "body" });
+  const status = el("div", { role: "alert", style: "padding:4px 10px;color:#fca5a5" });
 
   const changedCount = () => Object.keys(overrides).length;
   const updateToggle = () => (toggle.textContent = `⚙ Params${changedCount() ? ` (${changedCount()} changed)` : ""}`);
@@ -81,6 +89,13 @@ export function mountDevPanel() {
   };
 
   function set(field, value) {
+    const result = normalizeValue(field, value);
+    if (result.error) {
+      status.textContent = `${field.label}: ${result.error}`;
+      return;
+    }
+    status.textContent = "";
+    value = result.value;
     const norm = (v) => JSON.stringify(normalizeValue(field, v).value);
     const isDefault = norm(value) === norm(field.default);
     if (isDefault) delete overrides[field.path];
@@ -113,10 +128,20 @@ export function mountDevPanel() {
         return [range, num];
       }
       case "boolean":
-        return [el("input", { type: "checkbox", checked: !!value, onchange: (e) => set(field, e.target.checked) })];
+        return [
+          el("input", {
+            type: "checkbox",
+            checked: !!value,
+            onchange: (e) => set(field, e.target.checked)
+          })
+        ];
       case "color":
         return [
-          el("input", { type: "color", value: toHex(value), onchange: (e) => set(field, e.target.value) }),
+          el("input", {
+            type: "color",
+            value: toHex(value),
+            onchange: (e) => set(field, e.target.value)
+          }),
           toHex(value)
         ];
       case "select":
@@ -132,7 +157,13 @@ export function mountDevPanel() {
       }
       case "text": {
         if (!field.localized) {
-          return [el("input", { type: "text", value, onchange: (e) => set(field, e.target.value) })];
+          return [
+            el("input", {
+              type: "text",
+              value,
+              onchange: (e) => set(field, e.target.value)
+            })
+          ];
         }
         const map = toLocalized(value);
         return languages.map((lang) =>
@@ -157,22 +188,41 @@ export function mountDevPanel() {
         // asset
         const input = el("input", {
           type: "file",
-          accept: { image: "image/*", sound: "audio/*", model: ".glb,.zip", font: ".woff,.woff2,.ttf,.otf" }[field.type],
+          accept: {
+            image: ".png,.jpg,.jpeg,.webp,.gif",
+            sound: ".mp3,.aac,.ogg,.wav,.m4a",
+            model: ".glb,.zip",
+            font: ".woff,.woff2,.ttf,.otf"
+          }[field.type],
           onchange: async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            const bytes = await file.arrayBuffer();
-            const ext = file.name.split(".").pop().toLowerCase();
-            const id = `u/${await sha(bytes)}.${ext}`;
-            uploads[id] = await new Promise((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result);
-              reader.readAsDataURL(file);
-            });
-            set(field, id);
+            try {
+              const bytes = await file.arrayBuffer();
+              const ext = file.name.split(".").pop().toLowerCase();
+              const id = `u/${await sha(bytes)}.${ext}`;
+              const mime = detectMime(new Uint8Array(bytes));
+              const base64 = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(",")[1]);
+                reader.onerror = () => reject(new Error("File could not be read"));
+                reader.readAsDataURL(file);
+              });
+              validateAsset(id, { mime, base64 }, field);
+              uploads[id] = `data:${mime};base64,${base64}`;
+              set(field, id);
+            } catch (error) {
+              status.textContent = error.message;
+            }
           }
         });
-        const thumb = field.type === "image" ? el("img", { class: "thumb", src: assetPreviewSrc(value, uploads) }) : null;
+        const thumb =
+          field.type === "image"
+            ? el("img", {
+                class: "thumb",
+                src: assetPreviewSrc(value, uploads)
+              })
+            : null;
         return [thumb, el("span", { title: value }, String(value).split("/").pop()), input];
       }
     }
@@ -202,7 +252,16 @@ export function mountDevPanel() {
                 "label",
                 {},
                 ASSET_TYPES.includes(f.type) ? `${f.label} (${f.type})` : f.label,
-                isChanged ? el("a", { onclick: () => set(f, f.default), title: "Back to default" }, "↺") : null
+                isChanged
+                  ? el(
+                      "a",
+                      {
+                        onclick: () => set(f, f.default),
+                        title: "Back to default"
+                      },
+                      "↺"
+                    )
+                  : null
               ),
               el("div", { class: "ctl" }, control(f))
             );
@@ -217,8 +276,13 @@ export function mountDevPanel() {
     Object.values(overrides).forEach((v) => {
       if (typeof v === "string" && uploads[v]) variant.uploads[v] = uploads[v];
     });
-    const blob = new Blob([JSON.stringify(variant, null, 2)], { type: "application/json" });
-    el("a", { href: URL.createObjectURL(blob), download: "variant.json" }).click();
+    const blob = new Blob([JSON.stringify(variant, null, 2)], {
+      type: "application/json"
+    });
+    el("a", {
+      href: URL.createObjectURL(blob),
+      download: "variant.json"
+    }).click();
   };
 
   const addLanguage = () => {
@@ -235,11 +299,21 @@ export function mountDevPanel() {
       {},
       el("b", {}, "Playable params (dev)"),
       el("button", { class: "primary", onclick: apply }, "Apply"),
-      el("label", {}, el("input", { type: "checkbox", checked: true, onchange: (e) => (autoApply = e.target.checked) }), " auto"),
+      el(
+        "label",
+        {},
+        el("input", {
+          type: "checkbox",
+          checked: true,
+          onchange: (e) => (autoApply = e.target.checked)
+        }),
+        " auto"
+      ),
       el("button", { onclick: addLanguage }, "+ language"),
       el("button", { onclick: download }, "Download variant"),
       el("button", { onclick: clearPreview }, "Reset all")
     ),
+    status,
     body
   );
   document.body.append(panel, toggle);
