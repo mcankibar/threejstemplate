@@ -16,7 +16,7 @@
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {
-    "@esotericsoftware/spine-threejs": "^4.2.43",
+    "@esotericsoftware/spine-threejs": "~4.2.106",
     "fflate": "^0.8.2",
     "gsap": "^3.6.1",
     "lodash-es": "^4.17.21",
