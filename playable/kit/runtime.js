@@ -492,7 +492,14 @@ function seededRandom(seed) {
   };
 }
 
-function startBot({ strategy = "greedy", speed = 4, seed = 1, maxSteps = 200, timeoutMs = 120000 } = {}) {
+function startBot({
+  mode = "difficulty",
+  strategy = "greedy",
+  speed = 4,
+  seed = 1,
+  maxSteps = 200,
+  timeoutMs = 120000
+} = {}) {
   const adapter = bot.adapter;
   if (!adapter || bot.running) return;
   bot.running = true;
@@ -531,7 +538,8 @@ function startBot({ strategy = "greedy", speed = 4, seed = 1, maxSteps = 200, ti
       if (bot.errors.length) return finish("error", status);
       if (status.state === "won" || status.state === "lost") return finish(status.state, status);
       if (performance.now() - started > timeoutMs) return finish("timeout", status);
-      if (steps >= maxSteps) return finish("timeout", status);
+      if (steps >= maxSteps && status.state === "ready")
+        return finish(mode === "check" ? "checked" : "timeout", status);
       if (status.state !== "ready") {
         stuckSince = 0;
         return;
@@ -545,7 +553,12 @@ function startBot({ strategy = "greedy", speed = 4, seed = 1, maxSteps = 200, ti
       stuckSince = 0;
       adapter.play(pick(moves));
       steps++;
-      post({ type: "pl:bot-step", step: steps, movesLeft: status.movesLeft ?? null, goalsLeft: status.goalsLeft ?? null });
+      post({
+        type: "pl:bot-step",
+        step: steps,
+        movesLeft: status.movesLeft ?? null,
+        goalsLeft: status.goalsLeft ?? null
+      });
     } catch (e) {
       bot.errors.push(String(e && e.message ? e.message : e));
       finish("error", status);

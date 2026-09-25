@@ -322,3 +322,59 @@ test("MRAID and DAPI hidden-to-visible lifecycle pauses then loads", () => {
   delete globalThis.mraid;
   delete globalThis.dapi;
 });
+
+test("bot distinguishes a completed smoke check from a game that never becomes ready", async () => {
+  const listeners = {};
+  const messages = [];
+  let tick;
+  const interval = globalThis.setInterval;
+  const clear = globalThis.clearInterval;
+  const error = console.error;
+  const parent = { postMessage: (m) => messages.push(m) };
+  globalThis.window = {
+    __PL_MODE__: "preview",
+    parent,
+    name: "",
+    location: { origin: "http://localhost" },
+    addEventListener: (type, fn) => {
+      listeners[type] = fn;
+    }
+  };
+  globalThis.document = { getElementById: () => null, querySelectorAll: () => [] };
+  globalThis.setInterval = (fn) => {
+    tick = fn;
+    return 1;
+  };
+  globalThis.clearInterval = () => {};
+  try {
+    const runtime = await import("../playable/kit/runtime.js?bot-check-regression");
+    runtime.createRuntime({});
+    let steps = 0;
+    runtime.registerBot({ status: () => ({ state: "ready" }), moves: () => [{}], play: () => steps++ });
+    listeners.message({
+      source: parent,
+      origin: "http://localhost",
+      data: { type: "pl:bot", mode: "check", maxSteps: 2 }
+    });
+    tick();
+    tick();
+    tick();
+    assert.equal(steps, 2);
+    assert.equal(messages.at(-1).outcome, "checked");
+    runtime.registerBot({ status: () => ({ state: "busy" }), moves: () => [], play: () => {} });
+    listeners.message({
+      source: parent,
+      origin: "http://localhost",
+      data: { type: "pl:bot", mode: "check", timeoutMs: -1 }
+    });
+    tick();
+    assert.equal(messages.at(-1).outcome, "timeout");
+    assert.equal(messages.at(-1).steps, 0);
+  } finally {
+    globalThis.setInterval = interval;
+    globalThis.clearInterval = clear;
+    console.error = error;
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

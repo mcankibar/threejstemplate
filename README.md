@@ -282,3 +282,11 @@ SDK görünürlüğü ve document visibility oyun zamanını, GSAP animasyonlar�
 Yeni gameplay timer'ları için `playable.schedule(callback, milliseconds)` / `playable.cancel(timer)`
 kullanın; native `setTimeout` pause sözleşmesine dahil değildir. Mintegral, asset'ler hazır olduğunda
 `gameReady()` bildirir; `gameStart()` / `gameClose()` host olayları oyun duraklamasını yönetir.
+
+### Studio playtest sonuçları
+
+Kısa test `pl:bot` mesajında `mode: "check"` kullanır. Hedef hamle sayısından sonra oyun tekrar
+`ready` olduğunda `checked` döner; süre aşımı veya takılma `checked` değildir. Eski Studio test
+sonuçlarını onay olarak kullanmayın. Yeni kontrol protokolü için oyunun bu runtime ile bir kez
+yeniden build edilip yüklenmesi gerekir; sonraki varyasyonlar yeniden build gerektirmez.
+Bot seed'i hamle seçimine aittir; oyun içi rastgeleliğin tekrar üretilebilir olması adaptörün sorumluluğudur.
