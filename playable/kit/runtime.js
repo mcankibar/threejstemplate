@@ -158,6 +158,7 @@ function listenForPreviewMessages() {
     else if (msg.type === "pl:reset") clearPreview();
     else if (msg.type === "pl:inspect") setInspecting(!!msg.enabled);
     else if (msg.type === "pl:highlight") highlight(typeof msg.componentId === "string" ? msg.componentId : null);
+    else if (msg.type === "pl:bot") startBot(msg);
   });
 }
 
@@ -443,4 +444,112 @@ function setInspecting(enabled) {
     layer.addEventListener(type, (e) => e.stopPropagation());
   document.body.appendChild(layer);
   inspect.layer = layer;
+}
+
+// ── Bot playtest ─────────────────────────────────────────────────────────────
+// The Studio's "Playtest" plays the game by itself (in a hidden preview) to measure how hard a variant
+// is and to catch errors after a new release. The game provides the rules:
+//   registerBot({
+//     status() → { state: "busy" | "ready" | "won" | "lost", movesLeft?, goalsLeft? }
+//     moves()  → valid moves while "ready": [{ …anything play() needs, score? }] (higher score = better)
+//     play(move)
+//     setSpeed(x)  optional: run animations x times faster
+//   })
+// Messages: pl:bot-ready (the game supports it) · parent → pl:bot { strategy: "greedy" | "random",
+// speed, seed, maxSteps, timeoutMs } · pl:bot-step { step, movesLeft, goalsLeft } ·
+// pl:bot-result { outcome: "won" | "lost" | "stuck" | "timeout" | "error", steps, movesLeft,
+// goalsLeft, errors: [message], ms }. One run per page load; the parent reloads for the next.
+
+const bot = { adapter: null, running: false, errors: [] };
+
+if (previewEnabled()) {
+  // The kit's own problems (a missing asset, an invalid value) are logged as "[playable] …" errors.
+  const consoleError = console.error;
+  console.error = (...args) => {
+    if (typeof args[0] === "string" && args[0].startsWith("[playable]")) bot.errors.push(args.map(String).join(" "));
+    consoleError.apply(console, args);
+  };
+  window.addEventListener("error", (e) => bot.errors.push(String((e.error && e.error.message) || e.message)));
+  window.addEventListener("unhandledrejection", (e) =>
+    bot.errors.push(String((e.reason && e.reason.message) || e.reason))
+  );
+}
+
+export function registerBot(adapter) {
+  if (!previewEnabled()) return;
+  bot.adapter = adapter;
+  post({ type: "pl:bot-ready" });
+}
+
+function seededRandom(seed) {
+  let a = seed >>> 0 || 1;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function startBot({ strategy = "greedy", speed = 4, seed = 1, maxSteps = 200, timeoutMs = 120000 } = {}) {
+  const adapter = bot.adapter;
+  if (!adapter || bot.running) return;
+  bot.running = true;
+  const random = seededRandom(Number(seed) || 1);
+  const started = performance.now();
+  let steps = 0;
+  let stuckSince = 0;
+  if (adapter.setSpeed) adapter.setSpeed(Math.max(1, Math.min(Number(speed) || 1, 20)));
+
+  const finish = (outcome, status = {}) => {
+    bot.running = false;
+    clearInterval(timer);
+    post({
+      type: "pl:bot-result",
+      outcome,
+      steps,
+      movesLeft: status.movesLeft ?? null,
+      goalsLeft: status.goalsLeft ?? null,
+      errors: bot.errors.slice(0, 20),
+      ms: Math.round(performance.now() - started)
+    });
+  };
+
+  const pick = (moves) => {
+    if (strategy !== "random") {
+      const best = Math.max(...moves.map((m) => m.score ?? 0));
+      moves = moves.filter((m) => (m.score ?? 0) === best);
+    }
+    return moves[Math.floor(random() * moves.length)];
+  };
+
+  const tick = () => {
+    let status;
+    try {
+      status = adapter.status() || {};
+      if (bot.errors.length) return finish("error", status);
+      if (status.state === "won" || status.state === "lost") return finish(status.state, status);
+      if (performance.now() - started > timeoutMs) return finish("timeout", status);
+      if (steps >= maxSteps) return finish("timeout", status);
+      if (status.state !== "ready") {
+        stuckSince = 0;
+        return;
+      }
+      const moves = adapter.moves() || [];
+      if (!moves.length) {
+        stuckSince = stuckSince || performance.now();
+        if (performance.now() - stuckSince > 4000) finish("stuck", status);
+        return;
+      }
+      stuckSince = 0;
+      adapter.play(pick(moves));
+      steps++;
+      post({ type: "pl:bot-step", step: steps, movesLeft: status.movesLeft ?? null, goalsLeft: status.goalsLeft ?? null });
+    } catch (e) {
+      bot.errors.push(String(e && e.message ? e.message : e));
+      finish("error", status);
+    }
+  };
+  const timer = setInterval(tick, 60);
 }
