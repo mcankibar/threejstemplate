@@ -59,7 +59,27 @@ export function detectMime(bytes) {
   }
   if (bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0) return "font/ttf";
   if (ascii(bytes, 0, 2) === "PK") return "application/zip";
+  const text = textMime(bytes);
+  if (text) return text;
   throw new Error("Unsupported asset file signature");
+}
+
+/** "application/json" / "text/plain" for UTF-8 text files (atlas JSON, Spine .atlas), else null. */
+function textMime(bytes) {
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (e) {
+    return null;
+  }
+  // Binary files decode as UTF-8 surprisingly often; reject control characters other than whitespace.
+  if (/[\u0000-\u0008\u000e-\u001f]/.test(text)) return null;
+  try {
+    JSON.parse(text);
+    return "application/json";
+  } catch (e) {
+    return "text/plain";
+  }
 }
 
 export function inspectGlb(bytes) {
@@ -138,6 +158,11 @@ export function validateAsset(id, asset, field) {
         (mime === "font/woff2" && ascii(bytes, 0, 4) === "wOF2") ||
         (mime === "font/otf" && ascii(bytes, 0, 4) === "OTTO") ||
         (mime === "font/ttf" && bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0);
+      break;
+    case "data":
+      matches =
+        (mime === "application/zip" && ascii(bytes, 0, 2) === "PK") ||
+        ((mime === "application/json" || mime === "text/plain") && textMime(bytes) === mime);
       break;
     case "model": {
       const zipped = /\.zip$/i.test(id);
