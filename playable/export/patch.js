@@ -21,6 +21,21 @@ import { validateAsset, validateAssetId } from "../kit/assets.js";
 import { zipSync, strToU8 } from "fflate";
 import { EXPORT_NETWORKS, NETWORK_PROFILE_VERSION } from "./networks.js";
 
+// The CTA reads options.link.ios / options.link.android (lib/playinFramework3D/modules/playable.js).
+const STORE_LINK_PREFIX = "options.link.";
+
+/** Store-link overrides that the network may ignore (see storeUrl in ./networks.js). */
+function storeLinkWarning(net, fields, values) {
+  if (net.storeUrl === "always") return null;
+  const changed = fields
+    .filter((f) => f.path.startsWith(STORE_LINK_PREFIX) && f.path in values && values[f.path] !== f.default)
+    .map((f) => f.path);
+  if (!changed.length) return null;
+  return net.storeUrl === "never"
+    ? `${net.label} opens the store configured in the campaign; ${changed.join(", ")} has no effect`
+    : `${net.label} may open the store configured in the campaign instead of ${changed.join(", ")}`;
+}
+
 function manifestFields(manifest) {
   return manifest.fields.map((f) => ({ aliases: [], ...f }));
 }
@@ -171,6 +186,8 @@ export function exportVariant(
       overLimit: net.container === "zip" ? null : sizeBytes > net.maxMb * 1024 * 1024,
       sizeBasis: net.container === "zip" ? "zip" : "html",
       maxMb: net.maxMb,
+      storeUrl: net.storeUrl,
+      warnings: [storeLinkWarning(net, fields, values)].filter(Boolean),
       applied: Object.keys(values).length,
       orphans,
       errors,
