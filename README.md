@@ -9,6 +9,8 @@ npm run dev          # http://localhost:5173 — sol alttaki "⚙ Params" paneli
 npm run build        # dist/index.html (tek dosya "release") + dist/manifest.json
 npm run export -- --variant=variants/example-tr.json --networks=applovin,unity --langs=en,tr
 npm run export:all   # tüm ağlar, varyantsız
+npm run release      # build + Playable Studio'ya yükle (.env.local: PLAYABLE_STUDIO, PLAYABLE_STUDIO_TOKEN)
+npm run release -- --notes "yeni CTA"
 ```
 
 ## Neden bu yapı? (Playable Studio)
@@ -50,14 +52,14 @@ Bu yüzden Studio'dan bağımsız olarak her şey şimdiden lokalde çalışır.
 
 ## Nasıl çalışır
 
-| Dosya | Görev |
-|---|---|
-| `src/params.js` | **Tek kaynak.** Oyunun tüm config'i. `num/bool/color/text/image/...` ile sarılan değerler düzenlenebilir, düz değerler sabit. Asset'ler kullanan component'in içinde `assets: {...}` altında. |
-| `playable/kit/` | Tarayıcı runtime'ı: `params.js` + HTML'deki bloklar → `gameConfig`; ağ (store açma, MRAID/DAPI); önizleme köprüsü. |
-| `playable/build/` | Vite eklentisi: tek HTML + manifest üretir. |
-| `playable/export/` | Exporter: release + varyant → ağ/dil dosyaları (build yok, saf metin işlemi). |
-| `playable/dev/panel.js` | Sadece `npm run dev`'de açılan parametre paneli. |
-| `lib/playinFramework3D/` | Mevcut component framework'ü (config/asset girişi kit'e bağlandı). |
+| Dosya                    | Görev                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/params.js`          | **Tek kaynak.** Oyunun tüm config'i. `num/bool/color/text/image/...` ile sarılan değerler düzenlenebilir, düz değerler sabit. Asset'ler kullanan component'in içinde `assets: {...}` altında. |
+| `playable/kit/`          | Tarayıcı runtime'ı: `params.js` + HTML'deki bloklar → `gameConfig`; ağ (store açma, MRAID/DAPI); önizleme köprüsü.                                                                            |
+| `playable/build/`        | Vite eklentisi: tek HTML + manifest üretir.                                                                                                                                                   |
+| `playable/export/`       | Exporter: release + varyant → ağ/dil dosyaları (build yok, saf metin işlemi).                                                                                                                 |
+| `playable/dev/panel.js`  | Sadece `npm run dev`'de açılan parametre paneli.                                                                                                                                              |
+| `lib/playinFramework3D/` | Mevcut component framework'ü (config/asset girişi kit'e bağlandı).                                                                                                                            |
 
 Build çıktısındaki bloklar:
 
@@ -73,17 +75,18 @@ Build çıktısındaki bloklar:
 
 ```js
 ctaButton1: group("In-game CTA", {
-  componentType: "orthographic",                 // sabit
-  position: pos(0.75, 0.05, 0.85, 0.1),          // portrait x/y, landscape x/y — 0..1 slider
+  componentType: "orthographic", // sabit
+  position: pos(0.75, 0.05, 0.85, 0.1), // portrait x/y, landscape x/y — 0..1 slider
   scale: orient(0.35, 0.4, { min: 0.05, max: 2 }),
-  localization: loc({                            // dil bloğu: bir kez yazılır, her dile açılır
-    caption: text("PLAY NOW"),                   // veya text({ en: "PLAY NOW", tr: "HEMEN OYNA" })
+  localization: loc({
+    // dil bloğu: bir kez yazılır, her dile açılır
+    caption: text("PLAY NOW"), // veya text({ en: "PLAY NOW", tr: "HEMEN OYNA" })
     fontColor: color("#ffffff"),
     fontFamily: FONT
   }),
-  isEnabled: bool(true),                         // false olursa bu component'in görselleri export'ta çıkar
-  assets: { ctaButton: image("inGameCTAButton.png") }   // yol: assets/ klasörüne göre
-})
+  isEnabled: bool(true), // false olursa bu component'in görselleri export'ta çıkar
+  assets: { ctaButton: image("inGameCTAButton.png") } // yol: assets/ klasörüne göre
+});
 ```
 
 Alan tipleri: `num, bool, color, text, select, language, image, sound, model (.glb / .glb.zip), font, data`.
@@ -137,6 +140,7 @@ Oyunu iframe'de açan bir sayfa (Studio, dev paneli) şunu gönderir:
 iframe.contentWindow.postMessage({ type: "pl:preview", overrides: {...}, assets: { "u/abc.png": "data:image/png;base64,..." } }, "*");
 iframe.contentWindow.postMessage({ type: "pl:reset" }, "*");
 // oyun hazır olunca parent'a { type: "pl:ready", overrides, languages } yollar
+iframe.contentWindow.postMessage({ type: "pl:inspect", enabled: true }, "*"); // aşağıda: Select
 ```
 
 **Canlı önizleme.** Değişiklikler mümkünse oyun baştan başlamadan uygulanır: runtime yeni config'i çözer,
@@ -152,6 +156,34 @@ ikinci `render()`'da resize yolunu kullandığı için oyun durumu korunur.
 yukarıdaki durumlarda yenilenir. Yeni bir bileşen alanı canlı görünmüyorsa, o bileşenin `render()`'ı değeri
 yalnızca ilk çizimde okuyordur: ya bileşeni düzeltin ya da alana `restart: true` verin.
 
+**Oyunda seçerek düzenleme (Studio "Select").** Studio `{ type: "pl:inspect", enabled }` gönderince runtime
+oyunun üstüne şeffaf bir katman koyar: fare altındaki bileşeni kırmızı çerçeveyle gösterir, tıklamada parent'a
+`{ type: "pl:select", componentId, related, assets }` yollar. Studio önce tıklanan şeyin görsel alanlarını
+(`assets`: ör. bir taşa tıklanınca gems atlasının PNG+JSON'u, hangi kare olduğuyla), sonra bileşenin
+alanlarını, en altta ilişkili bileşenleri (`related`: `parent`, `contains`, `uses` = bileşenin referans
+tuttuğu başka bir bileşen, ör. ortak asset yükleyici ya da booster'lar, `below` = tıklanan noktanın
+altındakiler) gösterir. `{ type: "pl:highlight", componentId }` bir bileşeni dışarıdan çerçeveler. Oyun bunu `src/main.js`'te açar:
+
+```js
+registerInspector(
+  createSceneInspector({
+    components,
+    canvas: renderer.domElement,
+    views: () => [
+      { scene: orthoScene, camera: orthoCamera },
+      { scene: perspScene, camera: activeCamera }
+    ]
+  })
+);
+```
+
+`createSceneInspector` (`lib/playinFramework3D/modules/sceneInspector.js`) bileşenlerin tuttuğu Three.js
+nesnelerinden (`gameObjectsMap` ve kendi alanları) kimin neyi çizdiğini çıkarır; bileşenlere kod eklemek
+gerekmez. Görselin şeffaf kısımları ve stencil maskesinin dışında kalan kısımlar seçilmez; tıklanan
+görselin hangi asset'ten geldiği loader'ların önbelleklerinden (`loadedTexturesInGameMap`,
+`loadedAtlasTexturesMap`) bulunur. Seçilen bileşenin `params.js`'te alanı yoksa en yakın üst bileşen seçilir. Bir parça yanlış
+bileşene gidiyorsa, o nesneyi sahiplenen bileşen onu kendi alanında ya da `gameObjectsMap`'inde tutmalıdır.
+
 ## Ağlar
 
 `default, applovin, ironsource, smadex, unity, mintegral, appgrowth, moloco, facebook, google, liftoff, tiktok`
@@ -166,11 +198,11 @@ AppGrowth DAPI shim'i `playable/export/shims/appgrowth.js`'tedir ve bilerek değ
 Her export profili Studio'nun göstereceği `label`, `container` (`html` | `zip`) ve `storeUrl` alanlarını taşır.
 `storeUrl`, CTA'nın `options.link` adresini ağa iletip iletmediğini söyler:
 
-| `storeUrl` | Ağlar | Anlamı |
-|---|---|---|
-| `always` | default, unity, ironsource, liftoff | URL MRAID'e / `window.open`'a gider |
-| `maybe` | facebook, moloco | Önce URL ile MRAID denenir, yoksa ağ SDK'sı kampanyadaki mağazayı açar |
-| `never` | applovin, mintegral, appgrowth, google, tiktok, smadex | Ağ kampanyadaki mağazayı açar; `options.link` etkisizdir |
+| `storeUrl` | Ağlar                                                  | Anlamı                                                                 |
+| ---------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `always`   | default, unity, ironsource, liftoff                    | URL MRAID'e / `window.open`'a gider                                    |
+| `maybe`    | facebook, moloco                                       | Önce URL ile MRAID denenir, yoksa ağ SDK'sı kampanyadaki mağazayı açar |
+| `never`    | applovin, mintegral, appgrowth, google, tiktok, smadex | Ağ kampanyadaki mağazayı açar; `options.link` etkisizdir               |
 
 Varyant store linkini değiştirmişse `always` olmayan ağlarda export raporuna (`report.warnings`) uyarı düşer.
 Davranış değiştirilmedi; tablo mevcut koddan çıkarıldı ve cihaz QA'sıyla doğrulanmalıdır.
@@ -212,6 +244,7 @@ rastgele `window.__PL_PREVIEW_TOKEN__` tanımlayın ve her mesaja `token` ekleyi
 aynı-origin mesajlarda da zorunludur. SDK postMessage protokolleri bu preview protokolünden ayrıdır.
 
 Studio için önizleme sözleşmesi:
+
 - iframe export edilmiş dosyayı değil **release HTML'ini** açar; publish modu önizleme mesajlarını yok sayar.
 - Studio ile aynı origin'den servis ediliyorsa token gerekmez. Blob URL veya başka port kullanılıyorsa ham
   `dist/index.html` yeterli değildir: Studio, oyun kodundan önce `window.__PL_PREVIEW_TOKEN__`'ı tanımlayan

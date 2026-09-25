@@ -156,6 +156,8 @@ function listenForPreviewMessages() {
     if (token ? !authenticated : !sameOrigin) return;
     if (msg.type === "pl:preview") updatePreview(msg.overrides || {}, msg.assets || {});
     else if (msg.type === "pl:reset") clearPreview();
+    else if (msg.type === "pl:inspect") setInspecting(!!msg.enabled);
+    else if (msg.type === "pl:highlight") highlight(typeof msg.componentId === "string" ? msg.componentId : null);
   });
 }
 
@@ -269,4 +271,176 @@ export function updateDefinition(definition) {
   if (changed.length && !applyLive({ ...state, definition, fields, values, changed })) return window.location.reload();
   live.state = { ...live.state, definition, fields };
   live.listeners.forEach((listener) => listener(definition));
+}
+
+// ── Select in preview ────────────────────────────────────────────────────────
+// The Studio's "Select" mode: a transparent layer over the game takes the pointer (so the game does
+// not react), outlines the component under it and reports clicks. The game provides the lookup:
+//   registerInspector({ pick(clientX, clientY) → componentId[], bounds(componentId) → rect | null })
+// (lib/playinFramework3D/modules/sceneInspector.js builds one from the component map).
+// Messages to the parent: pl:inspectable (the game supports it), pl:hover { componentId } and
+//   pl:select { componentId, related: [{ componentId, reason }], assets: [{ path, frame }] }
+// related: components that belong with the selection — "parent", "contains", "uses" (it holds a
+// reference, e.g. a shared asset loader) and "below" (under the clicked point). assets: the image
+// fields of what was clicked (all files of an atlas/spine), e.g. the gem atlas when a tile is clicked.
+
+const inspect = { inspector: null, enabled: false, layer: null, box: null, hover: null, shown: null, frame: 0 };
+
+function post(message) {
+  if (window.parent && window.parent !== window && window.location.origin !== "null")
+    window.parent.postMessage(message, window.location.origin);
+}
+
+/** Components that have fields in src/params.js ("components.<id>.…"), so a pick lands on something editable. */
+function editable(ids) {
+  const fields = (live.state && live.state.fields) || [];
+  return ids.find((id) => fields.some((f) => f.path.startsWith(`components.${id}.`))) || null;
+}
+
+const pickIds = (result) => (Array.isArray(result) ? result : (result && result.ids) || []);
+
+/** Asset fields showing the loaded images { key, frame } (key = field.key or the asset id in use). */
+function assetFieldsFor(entries) {
+  const state = live.state;
+  if (!state || !entries || !entries.length) return [];
+  const assetFields = state.fields.filter((f) => ASSET_TYPES.includes(f.type));
+  const out = [];
+  for (const { key, frame } of entries) {
+    for (const field of assetFields) {
+      const value = field.path in state.values ? state.values[field.path] : field.default;
+      if ((field.key || value) !== key) continue;
+      // An atlas / spine is several fields (png, json, atlas text): list them together.
+      const slot = field.path.replace(/\.\d+$/, "");
+      for (const f of assetFields) {
+        if ((f.path === slot || f.path.startsWith(slot + ".")) && !out.some((a) => a.path === f.path))
+          out.push({ path: f.path, frame: frame || null });
+      }
+    }
+  }
+  return out;
+}
+
+function selection(result) {
+  const id = editable(pickIds(result));
+  if (!id) return null;
+  const related = [];
+  const add = (componentId, reason) => {
+    const target = componentId && editable([componentId]);
+    if (target && target !== id && !related.some((r) => r.componentId === target))
+      related.push({ componentId: target, reason });
+  };
+  const links = (inspect.inspector.related && inspect.inspector.related(id)) || [];
+  links.forEach((link) => add(link.componentId, link.reason));
+  ((result && result.stack) || []).forEach((componentId) => add(componentId, "below"));
+  return { componentId: id, related, assets: assetFieldsFor(result && result.assets) };
+}
+
+function labelOf(id) {
+  const fields = (live.state && live.state.fields) || [];
+  const field = fields.find((f) => f.path.startsWith(`components.${id}.`));
+  return (field && field.group) || id;
+}
+
+export function registerInspector(inspector) {
+  if (!previewEnabled()) return;
+  inspect.inspector = inspector;
+  post({ type: "pl:inspectable" });
+}
+
+function ensureBox() {
+  if (inspect.box) return inspect.box;
+  const box = document.createElement("div");
+  box.style.cssText =
+    "position:fixed;z-index:2147483647;pointer-events:none;box-sizing:border-box;border:2px solid #d7192f;" +
+    "background:rgba(215,25,47,.08);border-radius:3px;display:none;transition:all 60ms linear";
+  const label = document.createElement("div");
+  label.style.cssText =
+    "position:absolute;left:-2px;bottom:100%;margin-bottom:2px;background:#d7192f;color:#fff;" +
+    "font:600 11px/1.6 system-ui,sans-serif;padding:0 6px;border-radius:3px;white-space:nowrap";
+  box.appendChild(label);
+  document.body.appendChild(box);
+  inspect.box = box;
+  return box;
+}
+
+/** Keeps the outline on the shown component while it moves or animates. */
+function drawBox() {
+  cancelAnimationFrame(inspect.frame);
+  const id = inspect.shown;
+  const box = ensureBox();
+  const rect = id && inspect.inspector && inspect.inspector.bounds(id);
+  if (!rect) {
+    box.style.display = "none";
+  } else {
+    Object.assign(box.style, {
+      display: "block",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`
+    });
+    const label = box.firstChild;
+    label.textContent = labelOf(id);
+    // Keep the label inside the screen for elements at the top edge.
+    Object.assign(
+      label.style,
+      rect.top < 20 ? { bottom: "auto", top: "100%", marginTop: "2px" } : { bottom: "100%", top: "auto" }
+    );
+  }
+  if (id) inspect.frame = requestAnimationFrame(drawBox);
+}
+
+function show(id) {
+  if (inspect.shown === id) return;
+  inspect.shown = id;
+  drawBox();
+}
+
+/** Outline a component without select mode (the Studio hovers a field group). */
+function highlight(id) {
+  if (!inspect.inspector) return;
+  show(id || (inspect.enabled ? inspect.hover : null));
+}
+
+function setInspecting(enabled) {
+  if (!inspect.inspector || inspect.enabled === enabled) return;
+  inspect.enabled = enabled;
+  if (!enabled) {
+    inspect.layer.remove();
+    inspect.layer = null;
+    inspect.hover = null;
+    show(null);
+    return;
+  }
+  const layer = document.createElement("div");
+  layer.style.cssText = "position:fixed;inset:0;z-index:2147483646;cursor:crosshair;touch-action:none";
+  let pending = null;
+  const target = (e) => editable(pickIds(inspect.inspector.pick(e.clientX, e.clientY)));
+  layer.addEventListener("pointermove", (e) => {
+    if (pending) return;
+    pending = requestAnimationFrame(() => {
+      pending = null;
+      const id = target(e);
+      if (id === inspect.hover) return;
+      inspect.hover = id;
+      show(id);
+      post({ type: "pl:hover", componentId: id });
+    });
+  });
+  layer.addEventListener("pointerleave", () => {
+    inspect.hover = null;
+    show(null);
+    post({ type: "pl:hover", componentId: null });
+  });
+  layer.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const picked = selection(inspect.inspector.pick(e.clientX, e.clientY));
+    if (picked) post({ type: "pl:select", ...picked });
+  });
+  // The game listens on window/document too: keep presses from reaching it.
+  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend"])
+    layer.addEventListener(type, (e) => e.stopPropagation());
+  document.body.appendChild(layer);
+  inspect.layer = layer;
 }

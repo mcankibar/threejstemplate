@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "export": "node playable/export/cli.js",
     "export:all": "node playable/export/cli.js --networks=all",
+    "release": "vite build && node --env-file-if-exists=.env.local playable/publish.js",
     "format": "prettier --write \"{src,lib,playable,tests}/**/*.js\"",
     "test": "node --test tests/*.test.js"
   },
@@ -28,6 +29,6 @@
     "vite": "^6.3.0"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   }
 }

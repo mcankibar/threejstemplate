@@ -3,7 +3,7 @@ import _ from "lodash-es";
 import gsap from "gsap";
 
 import definition from "./params";
-import { createRuntime, onLiveUpdate, updateDefinition } from "../playable/kit/runtime.js";
+import { createRuntime, onLiveUpdate, registerInspector, updateDefinition } from "../playable/kit/runtime.js";
 import { resolveActiveCamera, resizeRendererToDisplaySize as resizeCameraRenderer } from "./utils/cameraUtils";
 import { END_CARD_LAYOUT } from "./config/endCardConfigs";
 
@@ -20,6 +20,7 @@ import {
   EventBus,
   ComponentInitializer,
   assignAssets,
+  createSceneInspector,
   Logo,
   Dimmer,
   Background,
@@ -674,6 +675,17 @@ export function initialize() {
   game.main();
   // Preview edits (dev panel / Studio) are applied to the running game when possible.
   onLiveUpdate((update) => game.applyLiveConfig(update));
+  // Studio "Select": click a part of the game to edit its fields. UI (ortho) is drawn on top.
+  registerInspector(
+    createSceneInspector({
+      components: game.components,
+      canvas: game.renderer.domElement,
+      views: () => [
+        { scene: game.orthoScene, camera: game.orthoCamera },
+        { scene: game.perspScene, camera: game.activeCamera }
+      ]
+    })
+  );
   if (import.meta.env.DEV) window.game = game; // console access while developing
   return game;
 }
