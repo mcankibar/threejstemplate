@@ -12,9 +12,14 @@ import {
   readJson,
   replaceBlock,
   gameBlock,
+  FORMAT_VERSION,
+  BLOCKS,
   hasBlock
 } from "../build/blocks.js";
-import { EXPORT_NETWORKS } from "./networks.js";
+import { ASSET_TYPES } from "../kit/fields.js";
+import { validateAsset, validateAssetId } from "../kit/assets.js";
+import { zipSync, strToU8 } from "fflate";
+import { EXPORT_NETWORKS, NETWORK_PROFILE_VERSION } from "./networks.js";
 
 function manifestFields(manifest) {
   return manifest.fields.map((f) => ({ aliases: [], ...f }));
@@ -22,9 +27,21 @@ function manifestFields(manifest) {
 
 /** Reads the editable schema and current values out of a release HTML. */
 export function inspectRelease(html) {
-  if (!hasBlock(html, "manifest")) throw new Error("no pl:manifest block — exported files can't be re-exported, use the release (dist/index.html)");
+  if (!hasBlock(html, "manifest"))
+    throw new Error("no pl:manifest block — exported files can't be re-exported, use the release (dist/index.html)");
   const manifest = readJson(html, "manifest");
-  return { manifest, overrides: readJson(html, "config"), assets: readAssets(html) };
+  if (manifest.format !== FORMAT_VERSION)
+    throw new Error(`Unsupported release format ${manifest.format}; rebuild the release`);
+  if (manifest.schemaVersion !== 1) throw new Error(`Unsupported schema version ${manifest.schemaVersion}`);
+  if (!Array.isArray(manifest.fields) || !manifest.game?.id) throw new Error("Invalid release manifest");
+  for (const block of BLOCKS) if (!hasBlock(html, block)) throw new Error(`Missing pl:${block} block`);
+  if (new Set(manifest.fields.map((f) => f.path)).size !== manifest.fields.length)
+    throw new Error("Duplicate field paths");
+  return {
+    manifest,
+    overrides: readJson(html, "config"),
+    assets: readAssets(html)
+  };
 }
 
 function insertBefore(html, tag, text) {
@@ -48,10 +65,18 @@ const byteLength = (data) => (typeof data === "string" ? new TextEncoder().encod
  * @param options.uploads    { assetId: { mime, base64 } } for ids that are not in the release
  * @param options.network    one of EXPORT_NETWORKS
  * @param options.language   forces options.language ("auto" keeps device detection)
+ * @param options.strict     true → unknown override paths fail the export; by default they are
+ *                           reported as orphans so variants survive fields removed in newer releases
  * @returns {{ files: Array<{ name, data }>, report }}
  */
-export function exportVariant(html, { overrides = {}, uploads = {}, network = "default", language = null } = {}) {
-  const net = EXPORT_NETWORKS[network];
+export function exportVariant(
+  html,
+  { overrides = {}, uploads = {}, network = "default", language = null, strict = false } = {}
+) {
+  for (const [name, value] of Object.entries({ overrides, uploads })) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+  }
+  const net = Object.prototype.hasOwnProperty.call(EXPORT_NETWORKS, network) && EXPORT_NETWORKS[network];
   if (!net) throw new Error(`unknown network "${network}"`);
 
   const { manifest, overrides: embedded, assets: releaseAssets } = inspectRelease(html);
@@ -66,24 +91,37 @@ export function exportVariant(html, { overrides = {}, uploads = {}, network = "d
   const { values, orphans, errors } = sanitizeOverrides(fields, requested);
 
   // ── assets ────────────────────────────────────────────────────────────
-  const typeOfId = new Map();
-  fields.forEach((f) => typeOfId.set(f.path in values ? values[f.path] : f.default, f.type));
+  if (strict && orphans.length) errors.push(`Unknown override paths: ${orphans.join(", ")}`);
+  const assetFields = fields.filter((f) => ASSET_TYPES.includes(f.type));
+  const typeOfId = new Map(assetFields.map((f) => [values[f.path] ?? f.default, f.type]));
 
   const { used, needed } = assetUsage(fields, values);
   const pruned = [];
   const missing = [];
   const assetList = [];
   for (const id of used) {
-    const src = uploads[id] || releaseAssets.get(id);
+    validateAssetId(id);
+    const src = Object.prototype.hasOwnProperty.call(uploads, id) ? uploads[id] : releaseAssets.get(id);
     if (!src || (!src.base64 && !src.src)) {
       missing.push(id);
       continue;
     }
+    for (const field of assetFields.filter((f) => (values[f.path] ?? f.default) === id)) {
+      try {
+        validateAsset(id, src, field);
+      } catch (e) {
+        errors.push(`${field.path}: ${e.message}`);
+      }
+    }
     const placeholder = !needed.has(id) && PLACEHOLDERS[typeOfId.get(id)];
     if (placeholder) pruned.push(id);
-    assetList.push({ id, ...(placeholder || { mime: src.mime, base64: src.base64 }) });
+    assetList.push({
+      id,
+      ...(placeholder || { mime: src.mime, base64: src.base64 })
+    });
   }
   if (missing.length) errors.push(...missing.map((id) => `asset "${id}" is neither in the release nor uploaded`));
+  if (errors.length) throw new Error(`Export validation failed:\n${errors.join("\n")}`);
   const removed = [...releaseAssets.keys()].filter((id) => !used.has(id));
 
   const files = [];
@@ -104,17 +142,15 @@ export function exportVariant(html, { overrides = {}, uploads = {}, network = "d
   out = replaceBlock(out, "manifest", "");
   out = replaceBlock(out, "config", configBlock(values));
   out = replaceBlock(out, "assets", assetsHtml);
-  out = replaceBlock(out, "network", networkBlock(network));
+  out = replaceBlock(out, "network", networkBlock(network, "publish"));
 
-  let code = readGameCode(out);
-  (net.replace || []).forEach(([search, replacement]) => {
-    code = typeof search === "string" ? code.split(search).join(replacement) : code.replace(search, replacement);
-  });
+  const code = readGameCode(out);
+  const beforeGame = net.beforeGame ? net.beforeGame + "\n" : "";
   if (net.inline === false) {
-    out = replaceBlock(out, "game", `<script src="${net.script}"></script>`);
+    out = replaceBlock(out, "game", beforeGame + `<script src="${net.script}"></script>`);
     files.push({ name: net.script, data: code });
   } else {
-    out = replaceBlock(out, "game", gameBlock(code));
+    out = replaceBlock(out, "game", beforeGame + gameBlock(code));
   }
   // Insert before the LAST </head> / </body>: the game code may contain those strings too.
   if (net.head) out = insertBefore(out, "</head>", net.head + "\n");
@@ -128,9 +164,12 @@ export function exportVariant(html, { overrides = {}, uploads = {}, network = "d
     files,
     report: {
       network,
+      profileVersion: NETWORK_PROFILE_VERSION,
+      releaseId: manifest.releaseId ?? null,
       language: values[fields.find((f) => f.type === "language")?.path] ?? null,
       sizeBytes,
-      overLimit: net.maxMb ? sizeBytes > net.maxMb * 1024 * 1024 : false,
+      overLimit: net.container === "zip" ? null : sizeBytes > net.maxMb * 1024 * 1024,
+      sizeBasis: net.container === "zip" ? "zip" : "html",
       maxMb: net.maxMb,
       applied: Object.keys(values).length,
       orphans,
@@ -138,5 +177,37 @@ export function exportVariant(html, { overrides = {}, uploads = {}, network = "d
       pruned,
       removed
     }
+  };
+}
+
+/** Package and enforce limits identically in Node and in a browser editor. */
+export function packageVariant(html, options = {}) {
+  const { files, report } = exportVariant(html, options);
+  const net = EXPORT_NETWORKS[report.network];
+  let data;
+  if (net.container === "zip") {
+    const entries = Object.create(null);
+    for (const file of files) {
+      validateAssetId(file.name);
+      entries[file.name] = [
+        typeof file.data === "string" ? strToU8(file.data) : file.data,
+        { mtime: new Date(1980, 0, 1) }
+      ];
+    }
+    if (net.maxFiles && files.length > net.maxFiles) throw new Error(`Too many files for ${report.network}`);
+    data = zipSync(entries, { level: 9 });
+  } else {
+    if (files.length !== 1) throw new Error("Single HTML profile produced additional files");
+    data = strToU8(files[0].data);
+  }
+  report.packageBytes = data.length;
+  report.overLimit = data.length > net.maxMb * 1024 * 1024;
+  if (report.overLimit) throw new Error(`${report.network}: packaged output exceeds ${net.maxMb} MiB`);
+  return {
+    files,
+    data,
+    extension: net.container === "zip" ? "zip" : "html",
+    entryName: net.htmlName || "index.html",
+    report
   };
 }
