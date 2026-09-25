@@ -3,7 +3,7 @@ import _ from "lodash-es";
 import gsap from "gsap";
 
 import definition from "./params";
-import { createRuntime } from "../playable/kit/runtime.js";
+import { createRuntime, onLiveUpdate, updateDefinition } from "../playable/kit/runtime.js";
 import { resolveActiveCamera, resizeRendererToDisplaySize as resizeCameraRenderer } from "./utils/cameraUtils";
 import { END_CARD_LAYOUT } from "./config/endCardConfigs";
 
@@ -19,6 +19,7 @@ import {
   RoundedTextBox,
   EventBus,
   ComponentInitializer,
+  assignAssets,
   Logo,
   Dimmer,
   Background,
@@ -567,6 +568,66 @@ class Game {
     };
   }
 
+  // ─── Live preview ────────────────────────────────────────────────────
+  // Called by playable/kit/runtime.js with the re-resolved config and the changed field paths.
+  // Only fields that can change while the game runs arrive here (see needsRestart in runtime.js);
+  // components re-render through the same path they use on resize, so game state is kept.
+
+  applyLiveConfig({ config, changed }) {
+    if (!this.areComponentsReady) return false;
+    const componentIds = new Set();
+    let optionsChanged = false;
+    changed.forEach((path) => {
+      const [root, id] = path.split(".");
+      if (root === "components") componentIds.add(id);
+      else if (root === "options") optionsChanged = true;
+    });
+
+    if (optionsChanged) {
+      // Components and the Playable share this object, so they see the new values right away.
+      // The language was resolved from "auto" at start; changing it restarts, so keep it here.
+      const { language, ...options } = config.options;
+      Object.assign(this.currentGameConfig.options, options);
+    }
+
+    componentIds.forEach((id) => {
+      const component = this.components.get(id);
+      if (!component) return;
+      const next = config.components[id];
+      this.currentGameConfig.components[id] = next;
+      const { assets, ...props } = next;
+      component.update(props);
+      if (assets) this.replaceComponentAssets(component, assets);
+      const onReady = component.onReady;
+      component.onReady = () => {
+        component.onReady = onReady;
+        onReady();
+        component.render();
+      };
+      component.load();
+    });
+
+    if (optionsChanged) this.playable.renderComponents(this.components);
+    return true;
+  }
+
+  /** Swaps a component's image entries; textures whose key stays the same are reloaded. */
+  replaceComponentAssets(component, assets) {
+    const srcOf = (entry) => entry.data || entry.assetPath;
+    const before = new Map();
+    Object.values(component.selectedImages || {}).forEach((list) =>
+      list.forEach((entry) => before.set(entry.key, srcOf(entry)))
+    );
+    assignAssets(component, assets);
+    Object.values(component.selectedImages || {}).forEach((list) =>
+      list.forEach((entry) => {
+        if (before.has(entry.key) && before.get(entry.key) !== srcOf(entry)) {
+          component.loadedTexturesInGameMap.delete(entry.key);
+        }
+      })
+    );
+  }
+
   // ─── Debug Panel (dev only) ───────────────────────────────────────
 
   /**
@@ -611,7 +672,15 @@ let game;
 export function initialize() {
   game = new Game(createRuntime(definition));
   game.main();
+  // Preview edits (dev panel / Studio) are applied to the running game when possible.
+  onLiveUpdate((update) => game.applyLiveConfig(update));
+  if (import.meta.env.DEV) window.game = game; // console access while developing
   return game;
+}
+
+// Editing src/params.js on the dev server updates the running game instead of reloading the page.
+if (import.meta.hot) {
+  import.meta.hot.accept("./params", (module) => module && updateDefinition(module.default));
 }
 
 // requestAnimFrame polyfill (cross-browser shim for requestAnimationFrame)

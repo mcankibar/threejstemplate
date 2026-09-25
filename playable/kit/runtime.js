@@ -6,11 +6,13 @@
 //   <script type="text/plain" data-pl-asset="logo.png" data-mime="image/png">BASE64</script>
 //   <script type="text/plain" data-pl-asset="logo.png" data-src="assets/logo.png"></script>  (path mode)
 //
-// Preview: a parent window (Studio / dev panel) sends { type: "pl:preview", overrides, assets } and
-// the page reloads itself with those values. The values survive the reload in window.name, so this
+// Preview: a parent window (Studio / dev panel) sends { type: "pl:preview", overrides, assets }. The
+// values are applied to the running game when possible (see "Live preview" below), otherwise the
+// page reloads itself with those values. The values survive the reload in window.name, so this
 // works in sandboxed iframes and without any storage permission.
 
 import { collectFields, resolveConfig, sanitizeOverrides } from "./resolve.js";
+import { ASSET_TYPES } from "./fields.js";
 import { getNetworkSettings } from "./networks.js";
 
 const previewEnabled = () => window.__PL_MODE__ === "preview";
@@ -53,6 +55,22 @@ export function clearPreview() {
   window.location.reload();
 }
 
+/** JSON data URIs become objects, text ones strings (ZIPs stay data URIs for their loaders). */
+function decodeDataUri(uri) {
+  const [head, body = ""] = uri.split(",");
+  const bytes = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
+  const text = new TextDecoder().decode(bytes);
+  if (/^data:application\/json/.test(head)) {
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      console.error("[playable] invalid JSON asset", e);
+      return null;
+    }
+  }
+  return text;
+}
+
 function collectAssetBlocks() {
   const blocks = new Map();
   document.querySelectorAll("script[data-pl-asset]").forEach((el) => {
@@ -63,8 +81,9 @@ function collectAssetBlocks() {
 
 function makeAssetEntry(blocks, previewAssets) {
   return (id, field) => {
-    const entry = { key: id, type: field.type };
+    const entry = { key: field.key || id, type: field.type };
     if (field.variant) entry.variant = field.variant;
+    if (field.loader) entry.loader = field.loader;
 
     let dataUri = previewAssets[id];
     const block = blocks.get(id);
@@ -83,6 +102,7 @@ function makeAssetEntry(blocks, previewAssets) {
 
     const isZip = /\.zip$/i.test(id) || dataUri.startsWith("data:application/zip");
     if (field.type === "model" && isZip) entry.zipData = dataUri;
+    else if (field.type === "data" && !isZip) entry.data = decodeDataUri(dataUri);
     else entry.data = dataUri;
     return entry;
   };
@@ -102,8 +122,10 @@ export function createRuntime(definition) {
   if (orphans.length) console.warn("[playable] ignored unknown config paths:", orphans);
   if (errors.length) console.warn("[playable] ignored invalid values:", errors);
 
-  const entry = makeAssetEntry(collectAssetBlocks(), (preview && preview.assets) || {});
+  const previewAssets = (preview && preview.assets) || {};
+  const entry = makeAssetEntry(collectAssetBlocks(), previewAssets);
   const { config, languages } = resolveConfig(definition, values, entry);
+  live.state = { definition, fields, embedded, values, assets: previewAssets };
 
   listenForPreviewMessages();
   if (previewEnabled() && window.parent && window.parent !== window && window.location.origin !== "null") {
@@ -132,7 +154,119 @@ function listenForPreviewMessages() {
     const sameOrigin = event.origin !== "null" && event.origin === window.location.origin;
     const authenticated = typeof token === "string" && token.length >= 16 && msg.token === token;
     if (token ? !authenticated : !sameOrigin) return;
-    if (msg.type === "pl:preview") applyPreview(msg.overrides || {}, msg.assets || {});
+    if (msg.type === "pl:preview") updatePreview(msg.overrides || {}, msg.assets || {});
     else if (msg.type === "pl:reset") clearPreview();
   });
+}
+
+// ── Live preview ─────────────────────────────────────────────────────────────
+// A preview change is applied to the running game when the game registered a handler
+// (onLiveUpdate) and every changed field can be applied live. Otherwise the page restarts.
+// A field restarts when it is marked { restart: true } (values the game only reads at start, such
+// as a level layout), when it is an isEnabled switch or the language, or when it is a non-image
+// asset (sounds, spines, atlases, fonts and models are decoded once at start).
+// Images are applied live: the component reloads its textures and renders again.
+
+const live = { state: null, handler: null, listeners: new Set() };
+
+/**
+ * Registers the function that applies a new config to the running game:
+ *   handler({ config, changed: [path, ...], assets: { assetId: dataUri } }) → true when applied
+ */
+export function onLiveUpdate(handler) {
+  live.handler = handler;
+}
+
+/** The definition currently in use (changes when src/params.js is hot-reloaded). */
+export function getDefinition() {
+  return live.state && live.state.definition;
+}
+
+/** Called with the new definition after src/params.js is hot-reloaded (dev panel). */
+export function onDefinitionChange(listener) {
+  live.listeners.add(listener);
+  return () => live.listeners.delete(listener);
+}
+
+function needsRestart(field) {
+  return (
+    field.restart === true ||
+    field.type === "language" ||
+    // Components build (or skip) their objects once, based on isEnabled.
+    /(^|\.)isEnabled$/.test(field.path) ||
+    // Spine/atlas pages and non-image assets are decoded once, at start.
+    !!field.loader ||
+    (ASSET_TYPES.includes(field.type) && field.type !== "image")
+  );
+}
+
+function changedPaths(fields, before, after, beforeFields = fields) {
+  const previous = new Map(beforeFields.map((f) => [f.path, f]));
+  return fields
+    .filter((f) => {
+      const old = previous.get(f.path);
+      const a = f.path in before ? before[f.path] : old && old.default;
+      const b = f.path in after ? after[f.path] : f.default;
+      return JSON.stringify(a) !== JSON.stringify(b);
+    })
+    .map((f) => f.path);
+}
+
+function applyLive({ definition, fields, values, assets, changed }) {
+  const byPath = new Map(fields.map((f) => [f.path, f]));
+  if (!live.handler || changed.some((p) => needsRestart(byPath.get(p)))) return false;
+  const blocks = collectAssetBlocks();
+  // An image that is neither in the page nor uploaded (e.g. a new file named in params.js) needs
+  // the page to be rebuilt by the dev server.
+  const missing = changed.some((p) => {
+    const field = byPath.get(p);
+    const id = p in values ? values[p] : field.default;
+    return ASSET_TYPES.includes(field.type) && !blocks.has(id) && !(id in assets);
+  });
+  if (missing) return false;
+  const entry = makeAssetEntry(blocks, assets);
+  const { config } = resolveConfig(definition, values, entry);
+  try {
+    if (live.handler({ config, changed, assets }) === false) return false;
+  } catch (e) {
+    console.error("[playable] live update failed, restarting", e);
+    return false;
+  }
+  live.state = { ...live.state, definition, fields, values, assets };
+  return true;
+}
+
+/**
+ * Applies preview overrides/assets (assets: { id: dataUri }) to the running game, or restarts the
+ * page with them when they cannot be applied live. Used by the dev panel and pl:preview messages.
+ */
+export function updatePreview(overrides = {}, assets = {}) {
+  if (!previewEnabled()) return;
+  const state = live.state;
+  if (!state) return applyPreview(overrides, assets);
+  // Keep the values for the next reload without reloading now.
+  window.name = PREVIEW_PREFIX + JSON.stringify({ overrides, assets });
+  const { values } = sanitizeOverrides(state.fields, { ...state.embedded, ...overrides });
+  const changed = changedPaths(state.fields, state.values, values);
+  if (!changed.length) return;
+  if (!applyLive({ ...state, values, assets, changed })) window.location.reload();
+}
+
+/** Hot-reload of src/params.js: re-resolves the config with the new defaults. */
+export function updateDefinition(definition) {
+  const state = live.state;
+  if (!previewEnabled() || !state) return window.location.reload();
+  const fields = collectFields(definition);
+  const paths = (list) =>
+    list
+      .map((f) => f.path)
+      .sort()
+      .join("\n");
+  // Added/removed fields change the manifest and the embedded asset blocks: restart.
+  if (paths(fields) !== paths(state.fields)) return window.location.reload();
+  const { values } = sanitizeOverrides(fields, { ...state.embedded, ...(readPreviewState() || {}).overrides });
+  const changed = changedPaths(fields, state.values, values, state.fields);
+  if (changed.length && !applyLive({ ...state, definition, fields, values, changed })) return window.location.reload();
+  live.state = { ...live.state, definition, fields };
+  live.listeners.forEach((listener) => listener(definition));
 }

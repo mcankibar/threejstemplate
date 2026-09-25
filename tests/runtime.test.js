@@ -218,8 +218,10 @@ test("preview bridge checks parent and origin before applying overrides", async 
     querySelectorAll: () => []
   };
   const { createRuntime } = await import("../playable/kit/runtime.js?bridge-test");
-  createRuntime({});
-  const data = { type: "pl:preview", overrides: { a: 1 } };
+  const { num } = await import("../playable/kit/fields.js");
+  createRuntime({ options: { a: num(0) } });
+  // No live handler is registered, so an accepted preview restarts the page.
+  const data = { type: "pl:preview", overrides: { "options.a": 1 } };
   listener({ data, source: {}, origin: "http://localhost:4173" });
   listener({ data, source: parent, origin: "https://other.example" });
   assert.equal(reloads, 0);
@@ -234,6 +236,50 @@ test("preview bridge checks parent and origin before applying overrides", async 
     origin: "null"
   });
   assert.equal(reloads, 2);
+  delete globalThis.window;
+  delete globalThis.document;
+});
+
+test("preview changes apply live unless a changed field needs a restart", async () => {
+  let listener,
+    reloads = 0;
+  const parent = { postMessage() {} };
+  globalThis.window = {
+    __PL_MODE__: "preview",
+    name: "",
+    parent,
+    addEventListener: (type, fn) => (listener = fn),
+    location: { origin: "http://localhost:4173", reload: () => reloads++ }
+  };
+  globalThis.document = { getElementById: () => null, querySelectorAll: () => [] };
+  const { createRuntime, onLiveUpdate, updatePreview } = await import("../playable/kit/runtime.js?live-test");
+  const { num, text, language } = await import("../playable/kit/fields.js");
+  createRuntime({
+    components: { cta: { scale: num(1), level: text("1,2", { restart: true }) } },
+    options: { language: language("auto") }
+  });
+  const updates = [];
+  onLiveUpdate((update) => updates.push(update));
+
+  updatePreview({ "components.cta.scale": 2 });
+  assert.equal(reloads, 0);
+  assert.deepEqual(updates[0].changed, ["components.cta.scale"]);
+  assert.equal(updates[0].config.components.cta.scale, 2);
+  // Same values again: nothing to do.
+  updatePreview({ "components.cta.scale": 2 });
+  assert.equal(updates.length, 1);
+  // Values are kept for a later restart.
+  assert.match(window.name, /components\.cta\.scale/);
+
+  updatePreview({ "components.cta.scale": 2, "components.cta.level": "3,4" });
+  assert.equal(reloads, 1);
+  assert.equal(updates.length, 1);
+
+  // A handler that cannot apply the change falls back to a restart.
+  onLiveUpdate(() => false);
+  updatePreview({ "components.cta.scale": 3 });
+  assert.equal(reloads, 2);
+  assert.equal(typeof listener, "function");
   delete globalThis.window;
   delete globalThis.document;
 });
