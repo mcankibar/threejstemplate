@@ -184,6 +184,27 @@ görselin hangi asset'ten geldiği loader'ların önbelleklerinden (`loadedTextu
 `loadedAtlasTexturesMap`) bulunur. Seçilen bileşenin `params.js`'te alanı yoksa en yakın üst bileşen seçilir. Bir parça yanlış
 bileşene gidiyorsa, o nesneyi sahiplenen bileşen onu kendi alanında ya da `gameObjectsMap`'inde tutmalıdır.
 
+**Playtest (bot):** Studio bir varyantın zorluğunu ölçmek ve yeni release'te varyantların çalıştığını
+doğrulamak için oyunu gizli bir önizlemede kendi kendine oynatır. Oyun kuralları bir adaptörle verir
+(`playable/kit/runtime.js`, "Bot playtest"; örnek: Match Squad'ın `grid/BotAdapter.js`'i):
+
+```js
+registerBot({
+  status: () => ({ state: "ready", movesLeft: 12, goalsLeft: 30 }), // "busy" | "ready" | "won" | "lost"
+  moves: () => [{ from: [0, 1], to: [0, 2], score: 7 }], // "ready" iken geçerli hamleler
+  play: (move) => { /* gerçek input yolundan uygula */ },
+  setSpeed: (x) => { /* animasyonları ve delta'yı x kat hızlandır */ }
+});
+```
+
+Kit hamleyi seçer (greedy: en yüksek `score`, eşitlikte rastgele), sonucu `pl:bot-result` ile bildirir;
+sayfadaki hatalar ve kit'in `[playable]` hataları sonucu "error" yapar.
+
+**Level editörü:** Bir metin alanına `editor: { type: "board", rows: "|", cells: ",", levels: "&", palette }`
+verilirse Studio onu ızgara olarak düzenler. Palet girdisi: `{ token, label, color, group, match?, image? }`;
+`image`: `{ atlas: "<atlas() alanının yolu>", frame }` ya da `{ image: "<image alanının yolu>" }`.
+`match: true` olan taşlar başlangıç eşleşmesi kontrolüne ve "Random fill"e girer.
+
 ## Ağlar
 
 `default, applovin, ironsource, smadex, unity, mintegral, appgrowth, moloco, facebook, google, liftoff, tiktok`
