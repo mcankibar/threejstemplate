@@ -127,6 +127,20 @@ Ağların runtime davranışı `playable/kit/networks.js`'te, export anındaki f
 dosyaya ayırma, TikTok için asset klasörü, paketleme farkları) `playable/export/networks.js`'te.
 İkisi de `@common-packages/ad-network-settings`'ten taşındı; private registry gerekmiyor.
 Boyut limitleri (`maxMb`) son paket üzerinde uygulanır — ağların güncel spesifikasyonuyla kontrol edin.
+İki listenin anahtarları aynı olmalıdır; test bunu kontrol eder. Yeni ağ eklerken ikisine birden ekleyin.
+AppGrowth DAPI shim'i `playable/export/shims/appgrowth.js`'tedir ve bilerek değiştirilmeden taşınmıştır.
+
+Her export profili Studio'nun göstereceği `label`, `container` (`html` | `zip`) ve `storeUrl` alanlarını taşır.
+`storeUrl`, CTA'nın `options.link` adresini ağa iletip iletmediğini söyler:
+
+| `storeUrl` | Ağlar | Anlamı |
+|---|---|---|
+| `always` | default, unity, ironsource, liftoff | URL MRAID'e / `window.open`'a gider |
+| `maybe` | facebook, moloco | Önce URL ile MRAID denenir, yoksa ağ SDK'sı kampanyadaki mağazayı açar |
+| `never` | applovin, mintegral, appgrowth, google, tiktok, smadex | Ağ kampanyadaki mağazayı açar; `options.link` etkisizdir |
+
+Varyant store linkini değiştirmişse `always` olmayan ağlarda export raporuna (`report.warnings`) uyarı düşer.
+Davranış değiştirilmedi; tablo mevcut koddan çıkarıldı ve cihaz QA'sıyla doğrulanmalıdır.
 
 ## Release sözleşmesi ve doğrulama
 
@@ -139,6 +153,10 @@ Exporter geçersiz dil/değer, strict modda bilinmeyen alan, eksik asset, güven
 boyut limiti veya desteklenmeyen model bağımlılığında hata verir. CLI bütün kombinasyonları doğruladıktan
 sonra çıktıları geçici dosyadan atomik rename ile yazar; doğrulama hatası olan batch yeni dosya yazmaz.
 Önceki başarılı export dosyaları otomatik silinmez. Çıktı isimleri çakışan varyantlar reddedilir.
+Her başarılı batch sonunda `exports/report.json` yazılır (Studio'nun export kaydı): `releaseId`, `profileVersion`
+ve her çıktı için `variant`, `network`, `language`, `path`, `packageBytes`, `sizeBytes`, `storeUrl`, `warnings`,
+`orphans`, `pruned`. Rapor dosya yazımından önce silinip en son yazılır; raporu olmayan klasör yarım kalmış
+bir batch'tir. `--langs` ile verilen dil varyanttaki dil alanını ezer; son dil `language` alanında görünür.
 `--key=value` ve `--key value` desteklenir. Mintegral çıktısı varyant klasörü içinde `mintegral.html` olur.
 
 Tarayıcı/Node entegrasyonunda `packageVariant(releaseHtml, options)` kullanılmalıdır; bu fonksiyon
@@ -159,6 +177,15 @@ Preview yalnızca release/dev modunda açıktır; final export `publish` modunda
 Cross-origin/sandbox önizleme gerektiğinde iframe belgesinde oyun başlamadan önce en az 16 karakterlik
 rastgele `window.__PL_PREVIEW_TOKEN__` tanımlayın ve her mesaja `token` ekleyin. Token kullanıldığında
 aynı-origin mesajlarda da zorunludur. SDK postMessage protokolleri bu preview protokolünden ayrıdır.
+
+Studio için önizleme sözleşmesi:
+- iframe export edilmiş dosyayı değil **release HTML'ini** açar; publish modu önizleme mesajlarını yok sayar.
+- Studio ile aynı origin'den servis ediliyorsa token gerekmez. Blob URL veya başka port kullanılıyorsa ham
+  `dist/index.html` yeterli değildir: Studio, oyun kodundan önce `window.__PL_PREVIEW_TOKEN__`'ı tanımlayan
+  küçük bir wrapper sayfa üretmelidir.
+- Diskte blob'lar tam sha256 ile saklanabilir, ama HTML ve varyant içindeki asset id'si bugünkü formatta kalır:
+  `u/<sha256'nın ilk 12 hex'i>.<uzantı>` (CLI'daki `loadVariant` ile aynı). Studio ikinci bir id formatı
+  üretmemeli; `packageVariant`'a `uploads: { [assetId]: { mime, base64 } }` geçmelidir.
 
 Build, import edilmiş CSS'i HTML içine gömer; desteklenmeyen yan dosyaları sessizce silmez, hata verir.
 `public/` otomatik kopyalanmaz: oyun asset'leri params üzerinden tanımlanmalıdır.
