@@ -86,8 +86,28 @@ ctaButton1: group("In-game CTA", {
 })
 ```
 
-Alan tipleri: `num, bool, color, text, select, language, image, sound, model (.glb / .glb.zip), font`.
-Yardımcılar: `group(label, {...})`, `loc({...})`, `pos(...)`, `orient(...)`.
+Alan tipleri: `num, bool, color, text, select, language, image, sound, model (.glb / .glb.zip), font, data`.
+Yardımcılar: `group(label, {...})`, `loc({...})`, `pos(...)`, `orient(...)`, `atlas(...)`, `spine(...)`.
+
+**Sprite atlas ve Spine.** Birden fazla dosyadan oluşan asset'ler için:
+
+```js
+assets: {
+  // TexturePacker JSON (hash) + PNG → selectedAtlases.gems, loader anahtarı "gems_PNG"
+  gems: atlas("gems", "gems/gems.png", "gems/gems.json"),
+  // PNG + iskelet JSON (.json veya .json.zip) + .atlas metni → selectedSpines.hero
+  hero: spine("hero", "spines/hero/hero.png", "spines/hero/hero.json.zip", "spines/hero/hero.atlas.txt")
+}
+```
+
+İkisi de `data` tipinde alan kullanır: JSON runtime'da nesneye, `.atlas.txt` metne çevrilir, `.json.zip` data URI
+olarak kalır ve Spine loader'ı açar. Export tarafında JSON / metin / ZIP içerikten tanınır ve doğrulanır.
+Spine dosyaları **4.2** formatındadır; runtime `@esotericsoftware/spine-threejs ~4.2` ile sabitlenmiştir (4.3
+runtime'ı 4.2 dosyalarını okuyamaz). Spine editörü sürümü değişirse runtime sürümü de birlikte güncellenmelidir.
+
+**Sabit anahtar.** Oyun kodu bir asset'e sabit bir adla erişiyorsa (`loadedTexturesInGameMap.get("board")`)
+alana `key` verin: `image("board.png", { key: "board" })`. Loader'lar asset'i bu adla saklar; varyantta dosya
+değişse de ad aynı kalır. `atlas()` / `spine()` anahtarları (`gems_PNG`, `hero_JSON` …) kendileri üretir.
 
 **Bir alanı yeniden adlandırırken** eski yolu yaz: `num(1, { was: "components.x.oldName" })`.
 Mevcut varyantlar otomatik taşınır; bilinmeyen yollar (ör. yeni release'te silinen alanlar) yetim olarak
@@ -111,13 +131,26 @@ raporlanır ve uygulanmaz. `--strict` (veya `strict: true`) verilirse export hat
 
 ## Önizleme köprüsü (Studio için)
 
-Oyunu iframe'de açan bir sayfa şunu gönderir; oyun yeni değerlerle yeniden başlar:
+Oyunu iframe'de açan bir sayfa (Studio, dev paneli) şunu gönderir:
 
 ```js
 iframe.contentWindow.postMessage({ type: "pl:preview", overrides: {...}, assets: { "u/abc.png": "data:image/png;base64,..." } }, "*");
 iframe.contentWindow.postMessage({ type: "pl:reset" }, "*");
 // oyun hazır olunca parent'a { type: "pl:ready", overrides, languages } yollar
 ```
+
+**Canlı önizleme.** Değişiklikler mümkünse oyun baştan başlamadan uygulanır: runtime yeni config'i çözer,
+oyun (`applyLiveConfig`, `src/main.js`) sadece değişen bileşenlere `update → load → render` uygular. Bileşenler
+ikinci `render()`'da resize yolunu kullandığı için oyun durumu korunur.
+Şu değişiklikler oyunu yeni değerlerle **yeniden başlatır** (dev panelinde ↻ ile işaretli):
+
+- `{ restart: true }` alanlar: oyunun yalnızca başlarken okuduğu değerler (ör. level düzeni).
+- `isEnabled` anahtarları, dil ve görsel dışındaki asset'ler (ses, font, model).
+- Sayfada olmayan yeni bir dosya (ör. params.js'te değiştirilen görsel yolu) veya eklenen/silinen alanlar.
+
+`npm run dev` sırasında `src/params.js` dosyasını kaydetmek de aynı yoldan geçer (Vite HMR); sayfa sadece
+yukarıdaki durumlarda yenilenir. Yeni bir bileşen alanı canlı görünmüyorsa, o bileşenin `render()`'ı değeri
+yalnızca ilk çizimde okuyordur: ya bileşeni düzeltin ya da alana `restart: true` verin.
 
 ## Ağlar
 
