@@ -1,5 +1,8 @@
 // Field helpers used by src/params.js to mark which parts of the game config are editable.
 //
+// Common opts for every field: { label, hint, restart }. restart: true marks a value that the game
+// only reads when it starts; a preview change of it restarts the game instead of updating it live.
+//
 // Anything wrapped in a helper becomes an editable field (it shows up in the manifest, in the dev
 // panel and in the Studio). Plain values stay internal constants that only the developer changes.
 //
@@ -41,15 +44,45 @@ export const language = (value = "auto", opts) => field("language", value, opts)
 // ── Asset fields ─────────────────────────────────────────────────────────────
 // The default is a path relative to the assets/ folder. At runtime the value becomes a loader
 // entry ({ key, data | zipData | assetPath, variant? }) that the framework loaders understand.
-// opts: { variant, enabledBy, label, maxBytes }
+// opts: { variant, enabledBy, label, maxBytes, key }
+//   key: the name the loaders store the asset under (defaults to the asset id). Use it when game
+//        code looks assets up by a fixed name, e.g. loadedTexturesInGameMap.get("board").
 
 export const image = (file, opts) => field("image", file, opts);
 export const sound = (file, opts) => field("sound", file, opts);
 /** GLB model; ".glb.zip" files are unzipped at runtime. */
 export const model = (file, opts) => field("model", file, opts);
 export const font = (file, opts) => field("font", file, opts);
+/**
+ * Raw data file: JSON (parsed at runtime), plain text (string) or a ZIP (kept as a data URI).
+ * Mostly used through atlas() and spine().
+ */
+export const data = (file, opts) => field("data", file, opts);
 
-export const ASSET_TYPES = ["image", "sound", "model", "font"];
+export const ASSET_TYPES = ["image", "sound", "model", "font", "data"];
+
+/**
+ * Sprite atlas (TexturePacker JSON hash + PNG). Loaded by the atlas loader under `${key}_PNG`.
+ *   assets: { gems: atlas("gems", "gems/gems.png", "gems/gems.json") }
+ */
+export function atlas(key, png, json, opts = {}) {
+  return [
+    image(png, { ...opts, key: `${key}_PNG`, variant: "image", loader: "atlas" }),
+    data(json, { ...opts, key: `${key}_JSON`, variant: "JSON", loader: "atlas" })
+  ];
+}
+
+/**
+ * Spine skeleton: texture PNG, skeleton JSON (optionally zipped) and the .atlas text file.
+ * The component receives it as selectedSpines[slot].
+ */
+export function spine(key, png, json, atlasText, opts = {}) {
+  return [
+    image(png, { ...opts, key: `${key}_PNG`, variant: "image", loader: "spine" }),
+    data(json, { ...opts, key: `${key}_JSON`, variant: "JSON", loader: "spine" }),
+    data(atlasText, { ...opts, key: `${key}_ATLAS_TXT`, variant: "atlasTxt", loader: "spine" })
+  ];
+}
 
 // ── Structure helpers ────────────────────────────────────────────────────────
 

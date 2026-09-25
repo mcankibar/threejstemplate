@@ -10,6 +10,8 @@
 //  • loc({...}) is a localization block written once; texts inside it take { en, tr, ... } maps.
 //
 //  Renaming an editable path? Add { was: "old.path" } to the field so existing variants migrate.
+//  { restart: true } marks values the game only reads when it starts (e.g. a level layout):
+//  changing them restarts the preview. Everything else is applied to the running game.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -26,7 +28,10 @@ import {
   image,
   sound,
   model,
-  font
+  font,
+  data,
+  atlas,
+  spine
 } from "../playable/kit/fields.js";
 
 const FONT = "clashDisplayBold";
