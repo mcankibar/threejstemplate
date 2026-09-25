@@ -103,7 +103,8 @@ export default function playable(options = {}) {
     configureServer(server) {
       server.watcher.add(abs(assetsDir));
       const reload = (file) => {
-        if (file.startsWith(abs(assetsDir)) || file === abs(params)) server.ws.send({ type: "full-reload" });
+        // src/params.js is hot-updated by the game itself (import.meta.hot in src/main.js).
+        if (file.startsWith(abs(assetsDir))) server.ws.send({ type: "full-reload" });
       };
       server.watcher.on("change", reload);
       server.watcher.on("add", reload);

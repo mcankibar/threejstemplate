@@ -1,13 +1,20 @@
 // Dev-only parameter panel (loaded by src/entry.js under `npm run dev`, never in builds).
 // It generates a form from src/params.js, applies changes through the same preview mechanism the
-// Studio will use (reload with overrides), and downloads the result as a variant file that
-// `npm run export -- --variant=...` understands.
+// Studio will use (live when possible, otherwise a restart with the overrides — see
+// updatePreview in playable/kit/runtime.js), and downloads the result as a variant file that
+// `npm run export -- --variant=...` understands. Fields marked ↻ restart the game.
 
 import { detectMime, validateAsset } from "../kit/assets.js";
-import definition from "../../src/params.js";
 import { ASSET_TYPES } from "../kit/fields.js";
 import { collectFields, collectLanguages, normalizeValue, toLocalized } from "../kit/resolve.js";
-import { applyPreview, clearPreview, readPreviewState } from "../kit/runtime.js";
+import {
+  applyPreview,
+  clearPreview,
+  getDefinition,
+  onDefinitionChange,
+  readPreviewState,
+  updatePreview
+} from "../kit/runtime.js";
 
 const STYLES = `
 #pl-dev-toggle{position:fixed;left:8px;bottom:8px;z-index:9999;font:12px/1 system-ui,sans-serif;padding:8px 10px;border-radius:6px;border:0;background:#1f2937;color:#fff;cursor:pointer;opacity:.85}
@@ -57,10 +64,19 @@ function assetPreviewSrc(id, uploads) {
   const block = document.querySelector(`script[data-pl-asset="${CSS_ESCAPE(id)}"]`);
   return block ? `data:${block.getAttribute("data-mime")};base64,${block.textContent.trim()}` : "";
 }
+// Mirrors needsRestart in playable/kit/runtime.js (for the ↻ hint only).
+const restartsGame = (f) =>
+  f.restart === true ||
+  f.type === "language" ||
+  /(^|\.)isEnabled$/.test(f.path) ||
+  !!f.loader ||
+  (ASSET_TYPES.includes(f.type) && f.type !== "image");
+
 const CSS_ESCAPE = (s) => (window.CSS && window.CSS.escape ? window.CSS.escape(s) : s);
 
 export function mountDevPanel() {
-  const fields = collectFields(definition);
+  // The definition comes from the runtime so that editing src/params.js hot-updates this panel.
+  let fields = collectFields(getDefinition());
   const preview = readPreviewState() || { overrides: {}, assets: {} };
   const overrides = { ...preview.overrides };
   const uploads = { ...preview.assets };
@@ -80,12 +96,13 @@ export function mountDevPanel() {
   const changedCount = () => Object.keys(overrides).length;
   const updateToggle = () => (toggle.textContent = `⚙ Params${changedCount() ? ` (${changedCount()} changed)` : ""}`);
 
-  const apply = () => applyPreview(overrides, uploads);
+  const apply = () => updatePreview(overrides, uploads);
+  const restart = () => applyPreview(overrides, uploads);
   const scheduleApply = () => {
     updateToggle();
     if (!autoApply) return;
     clearTimeout(timer);
-    timer = setTimeout(apply, 700);
+    timer = setTimeout(apply, 150);
   };
 
   function set(field, value) {
@@ -251,7 +268,7 @@ export function mountDevPanel() {
               el(
                 "label",
                 {},
-                ASSET_TYPES.includes(f.type) ? `${f.label} (${f.type})` : f.label,
+                (ASSET_TYPES.includes(f.type) ? `${f.label} (${f.type})` : f.label) + (restartsGame(f) ? " ↻" : ""),
                 isChanged
                   ? el(
                       "a",
@@ -299,6 +316,7 @@ export function mountDevPanel() {
       {},
       el("b", {}, "Playable params (dev)"),
       el("button", { class: "primary", onclick: apply }, "Apply"),
+      el("button", { onclick: restart, title: "Restart the game with the current values" }, "Restart"),
       el(
         "label",
         {},
@@ -319,5 +337,9 @@ export function mountDevPanel() {
   document.body.append(panel, toggle);
   updateToggle();
   render();
+  onDefinitionChange((definition) => {
+    fields = collectFields(definition);
+    render();
+  });
   if (changedCount()) panel.classList.add("open");
 }
